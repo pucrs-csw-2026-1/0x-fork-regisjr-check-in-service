@@ -50,7 +50,7 @@ export class JwtAuthGuard implements CanActivate {
 
       if (firstError instanceof jwt.JsonWebTokenError) {
         // ADR-008: signature failure may indicate secret rotation — refresh and retry once
-        secret = await this.secretsManagerService.refreshSecret(secretId);
+        secret = await this.secretsManagerService.refreshSecret(secretId, envSecret);
         try {
           const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AccessTokenPayload;
           request.user = { sub: payload.sub, scopes: payload.scopes ?? [] };

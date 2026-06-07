@@ -35,9 +35,9 @@ export class SecretsManagerService implements OnModuleInit {
   }
 
   // ADR-008: called by JwtAuthGuard on signature failure to refresh a potentially rotated secret
-  async refreshSecret(secretId: string): Promise<string> {
+  async refreshSecret(secretId: string, envFallback = ''): Promise<string> {
     this.cache.delete(secretId);
-    return this.loadSecret(secretId, '');
+    return this.loadSecret(secretId, envFallback);
   }
 
   private async loadSecret(secretId: string, envFallback: string): Promise<string> {
