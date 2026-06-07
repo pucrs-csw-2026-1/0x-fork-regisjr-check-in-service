@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 
 import { RegistrationServiceClient } from '../http-clients/registration-service.client';
 import { SnsPublisherService } from '../messaging/sns-publisher.service';
 import { CheckInMethod, CheckInRecord, QrCodeAuditRecord } from './domain/check-in.types';
+import { CheckInRepository } from './infrastructure/repository/check-in.repository';
 import { QrCodeTokenService } from './infrastructure/jwt/qr-code-token.service';
 
 export interface GenerateQrCodeResponse {
@@ -52,19 +53,19 @@ interface ManualCheckInPayload {
 
 @Injectable()
 export class CheckInService {
-  private readonly checkInsByEvent = new Map<string, Map<string, CheckInRecord>>();
-  private readonly qrAuditsByEvent = new Map<string, QrCodeAuditRecord[]>();
+  private readonly logger = new Logger(CheckInService.name);
 
   constructor(
     private readonly qrCodeTokenService: QrCodeTokenService,
     private readonly registrationServiceClient: RegistrationServiceClient,
     private readonly snsPublisherService: SnsPublisherService,
+    private readonly checkInRepository: CheckInRepository,
   ) {}
 
   async generateQrCode(eventId: string, userId: string): Promise<GenerateQrCodeResponse> {
     await this.registrationServiceClient.validateRegistration(eventId, userId);
 
-    const issued = this.qrCodeTokenService.issue(eventId, userId);
+    const issued = await this.qrCodeTokenService.issue(eventId, userId);
     const audit: QrCodeAuditRecord = {
       eventId,
       userId,
@@ -73,9 +74,7 @@ export class CheckInService {
       expiresAt: issued.expiresAt,
     };
 
-    const currentAudits = this.qrAuditsByEvent.get(eventId) ?? [];
-    currentAudits.push(audit);
-    this.qrAuditsByEvent.set(eventId, currentAudits);
+    await this.checkInRepository.saveQrAudit(audit);
 
     return {
       token: issued.token,
@@ -85,7 +84,7 @@ export class CheckInService {
   }
 
   async scan(payload: ScanPayload): Promise<CheckInResponse> {
-    const tokenClaims = this.qrCodeTokenService.verify(payload.token);
+    const tokenClaims = await this.qrCodeTokenService.verify(payload.token);
     await this.registrationServiceClient.validateRegistration(payload.eventId, tokenClaims.userId);
 
     return this.persistCheckIn({
@@ -112,19 +111,20 @@ export class CheckInService {
   }
 
   async listEventCheckIns(eventId: string, page = 1, limit = 20): Promise<CheckInListResponse> {
-    const records = this.getEventRecords(eventId);
+    const { items } = await this.checkInRepository.listByEvent(eventId, limit * page);
     const start = (page - 1) * limit;
+    const pageItems = items.slice(start, start + limit);
 
     return {
-      data: records.slice(start, start + limit),
-      total: records.length,
+      data: pageItems,
+      total: items.length,
       page,
       limit,
     };
   }
 
   async getUserCheckIn(eventId: string, userId: string): Promise<CheckInResponse> {
-    const record = this.getEventRecords(eventId).find((item) => item.userId === userId);
+    const record = await this.checkInRepository.findByEventAndUser(eventId, userId);
 
     if (!record) {
       throw new NotFoundException('Check-in not found');
@@ -134,35 +134,34 @@ export class CheckInService {
   }
 
   async getStats(eventId: string): Promise<CheckInStatsResponse> {
-    const records = this.getEventRecords(eventId);
-    const audits = this.qrAuditsByEvent.get(eventId) ?? [];
+    const { items } = await this.checkInRepository.listByEvent(eventId, 1000);
+    const qrAudits = await this.checkInRepository.countQrAudits(eventId);
 
     return {
       eventId,
-      totalCheckIns: records.length,
-      byMethod: records.reduce<Record<string, number>>((accumulator, item) => {
-        accumulator[item.method] = (accumulator[item.method] ?? 0) + 1;
-        return accumulator;
+      totalCheckIns: items.length,
+      byMethod: items.reduce<Record<string, number>>((acc, item) => {
+        acc[item.method] = (acc[item.method] ?? 0) + 1;
+        return acc;
       }, {}),
-      qrAudits: audits.length,
+      qrAudits,
     };
   }
 
-  private persistCheckIn(input: {
+  private async persistCheckIn(input: {
     eventId: string;
     userId: string;
     method: CheckInMethod;
     scannedBy: string;
     reason: string | null;
     tokenJti: string | null;
-  }): CheckInResponse {
-    const now = new Date().toISOString();
-    const eventRecords = this.checkInsByEvent.get(input.eventId) ?? new Map<string, CheckInRecord>();
-
-    if (eventRecords.has(input.userId)) {
-      return eventRecords.get(input.userId) as CheckInResponse;
+  }): Promise<CheckInResponse> {
+    const existing = await this.checkInRepository.findByEventAndUser(input.eventId, input.userId);
+    if (existing) {
+      return existing;
     }
 
+    const now = new Date().toISOString();
     const record: CheckInRecord = {
       checkInId: randomUUID(),
       eventId: input.eventId,
@@ -175,26 +174,30 @@ export class CheckInService {
       createdAt: now,
     };
 
-    eventRecords.set(input.userId, record);
-    this.checkInsByEvent.set(input.eventId, eventRecords);
-    void this.snsPublisherService.publish({
-      eventType: 'CheckInCompleted',
-      version: '1.0',
-      occurredAt: now,
-      data: {
-        checkInId: record.checkInId,
-        eventId: record.eventId,
-        userId: record.userId,
-        checkedInAt: record.checkedInAt,
-        method: record.method,
-        scannedBy: record.scannedBy,
-      },
-    });
+    await this.checkInRepository.save(record);
+
+    void this.publishEvent(record, now);
 
     return record;
   }
 
-  private getEventRecords(eventId: string): CheckInResponse[] {
-    return [...(this.checkInsByEvent.get(eventId)?.values() ?? [])];
+  private async publishEvent(record: CheckInRecord, now: string): Promise<void> {
+    try {
+      await this.snsPublisherService.publish({
+        eventType: 'CheckInCompleted',
+        version: '1.0',
+        occurredAt: now,
+        data: {
+          checkInId: record.checkInId,
+          eventId: record.eventId,
+          userId: record.userId,
+          checkedInAt: record.checkedInAt,
+          method: record.method,
+          scannedBy: record.scannedBy,
+        },
+      });
+    } catch (err) {
+      this.logger.error('Failed to publish CheckInCompleted event to SNS', (err as Error).message);
+    }
   }
 }

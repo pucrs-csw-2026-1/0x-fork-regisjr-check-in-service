@@ -1,6 +1,10 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+
+import { AppConfiguration } from '../../../config/configuration';
+import { SecretsManagerService } from '../../../secrets/secrets-manager.service';
 
 interface QrCodeClaims {
   eventId: string;
@@ -10,14 +14,19 @@ interface QrCodeClaims {
 
 @Injectable()
 export class QrCodeTokenService {
-  issue(eventId: string, userId: string): { token: string; payload: string; expiresAt: string; jti: string } {
-    const secret = process.env.QR_JWT_SECRET;
-    if (!secret) {
-      throw new InternalServerErrorException('Missing QR secret');
-    }
+  constructor(
+    private readonly secretsManagerService: SecretsManagerService,
+    private readonly configService: ConfigService<AppConfiguration>,
+  ) {}
 
-    const ttlSeconds = Number(process.env.QR_JWT_TTL_SECONDS ?? 300);
+  async issue(
+    eventId: string,
+    userId: string,
+  ): Promise<{ token: string; payload: string; expiresAt: string; jti: string }> {
+    const secret = await this.getSecret();
+    const ttlSeconds = this.configService.get<number>('qrJwtTtlSeconds') ?? 300;
     const jti = randomUUID();
+
     const token = jwt.sign({ eventId, userId, jti } satisfies QrCodeClaims, secret, {
       algorithm: 'HS256',
       expiresIn: ttlSeconds,
@@ -31,13 +40,28 @@ export class QrCodeTokenService {
     };
   }
 
-  verify(token: string): QrCodeClaims {
-    const secret = process.env.QR_JWT_SECRET;
+  async verify(token: string): Promise<QrCodeClaims> {
+    const secret = await this.getSecret();
+    const normalizedToken = token.startsWith('checkin://') ? token.slice('checkin://'.length) : token;
+    try {
+      return jwt.verify(normalizedToken, secret, { algorithms: ['HS256'] }) as QrCodeClaims;
+    } catch (err) {
+      if (err instanceof jwt.TokenExpiredError) {
+        throw new UnauthorizedException('QR code expired');
+      }
+      throw new UnauthorizedException('Invalid QR code');
+    }
+  }
+
+  private async getSecret(): Promise<string> {
+    const secretId = this.configService.get<string>('qrJwtSecretId') ?? '';
+    const envSecret = this.configService.get<string>('qrJwtSecret') ?? '';
+    const secret = await this.secretsManagerService.getSecret(secretId, envSecret);
+
     if (!secret) {
       throw new InternalServerErrorException('Missing QR secret');
     }
 
-    const normalizedToken = token.startsWith('checkin://') ? token.slice('checkin://'.length) : token;
-    return jwt.verify(normalizedToken, secret, { algorithms: ['HS256'] }) as QrCodeClaims;
+    return secret;
   }
 }
