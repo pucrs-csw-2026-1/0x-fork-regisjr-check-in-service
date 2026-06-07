@@ -22,6 +22,10 @@ import {
   ScanQrCodeDto,
 } from './dto/check-in.dto';
 
+// Auth Service role hierarchy (cumulative):
+//   admin   ⊇ manager ⊇ participant
+// A token for role X always includes all scopes of roles below it.
+
 @ApiTags('Check-ins')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -37,11 +41,14 @@ export class CheckInController {
   ) {}
 
   @Get('events/:eventId/guests/:userId/qr-code')
-  @Roles('user', 'admin')
+  @Roles('participant')
   @Throttle({ default: { ttl: 60000, limit: 10 } })
-  @ApiOperation({ summary: 'Gera QR code para check-in', description: 'Requer role user (próprio QR) ou admin.' })
+  @ApiOperation({
+    summary: 'Gera QR code para check-in',
+    description: 'Emite JWT de curta duração (padrão 5 min). Role `participant` pode gerar apenas o próprio QR. `admin` pode gerar para qualquer usuário.',
+  })
   @ApiParam({ name: 'eventId', example: 'evt-123' })
-  @ApiParam({ name: 'userId', description: 'Keycloak user ID', example: 'uuid-keycloak' })
+  @ApiParam({ name: 'userId', description: 'ID do participante (sub do JWT)', example: 'uuid' })
   @ApiResponse({ status: 200, type: GenerateQrCodeResponseDto })
   @ApiResponse({ status: 401, description: 'Token ausente, expirado ou inválido' })
   @ApiResponse({ status: 403, description: 'Role insuficiente ou usuário tentando gerar QR de terceiro' })
@@ -51,39 +58,42 @@ export class CheckInController {
     @Param('userId') userId: string,
     @Req() request: any,
   ): Promise<GenerateQrCodeResponseDto> {
-    const caller: string = request.user?.keycloakUserId;
-    if (caller !== userId && !request.user?.roles?.includes('admin')) {
+    const caller: string = request.user?.userId;
+    if (caller !== userId && !request.user?.scopes?.includes('admin')) {
       throw new ForbiddenException('Insufficient permissions');
     }
     return this.generateQrCodeUseCase.execute(eventId, userId);
   }
 
   @Post('check-ins/scan')
-  @Roles('staff', 'organizer', 'admin')
-  @ApiOperation({ summary: 'Registra check-in via QR code', description: 'Retorna 409 com registro existente em caso de duplicata.' })
+  @Roles('manager')
+  @ApiOperation({
+    summary: 'Registra check-in via QR code',
+    description: 'Role `manager` ou `admin`. Retorna 409 com o registro existente em caso de scan duplicado.',
+  })
   @ApiResponse({ status: 201, type: CheckInDto })
   @ApiResponse({ status: 400, description: 'Body inválido' })
   @ApiResponse({ status: 401, description: 'Token inválido/expirado' })
-  @ApiResponse({ status: 403, description: 'Role insuficiente' })
+  @ApiResponse({ status: 403, description: 'Role insuficiente (requer manager)' })
   @ApiResponse({ status: 409, description: 'Participante já fez check-in', type: CheckInDto })
   @ApiResponse({ status: 503, description: 'Registration Service ou DynamoDB indisponível' })
   async scan(@Body() body: ScanQrCodeDto, @Req() request: any): Promise<CheckInDto> {
     return this.scanQrCodeUseCase.execute(
       body.token,
       body.eventId,
-      request.user?.keycloakUserId ?? body.scannedBy,
+      request.user?.userId ?? body.scannedBy,
     );
   }
 
   @Get('events/:eventId/check-ins')
-  @Roles('organizer', 'admin')
-  @ApiOperation({ summary: 'Lista check-ins do evento' })
+  @Roles('manager')
+  @ApiOperation({ summary: 'Lista check-ins do evento', description: 'Role `manager` ou `admin`.' })
   @ApiParam({ name: 'eventId', example: 'evt-123' })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
   @ApiResponse({ status: 200, type: CheckInListResponseDto })
   @ApiResponse({ status: 401, description: 'Token inválido/ausente' })
-  @ApiResponse({ status: 403, description: 'Role insuficiente' })
+  @ApiResponse({ status: 403, description: 'Role insuficiente (requer manager)' })
   @ApiResponse({ status: 503, description: 'DynamoDB indisponível' })
   async listEventCheckIns(
     @Param('eventId') eventId: string,
@@ -95,25 +105,25 @@ export class CheckInController {
 
   // Static route BEFORE dynamic :userId to avoid routing conflict
   @Get('events/:eventId/check-ins/stats')
-  @Roles('organizer', 'admin')
-  @ApiOperation({ summary: 'Estatísticas de presença do evento' })
+  @Roles('manager')
+  @ApiOperation({ summary: 'Estatísticas de presença do evento', description: 'Role `manager` ou `admin`.' })
   @ApiParam({ name: 'eventId', example: 'evt-123' })
   @ApiResponse({ status: 200, type: CheckInStatsResponseDto })
   @ApiResponse({ status: 401, description: 'Token inválido/ausente' })
-  @ApiResponse({ status: 403, description: 'Role insuficiente' })
+  @ApiResponse({ status: 403, description: 'Role insuficiente (requer manager)' })
   @ApiResponse({ status: 503, description: 'DynamoDB indisponível' })
   async getStats(@Param('eventId') eventId: string): Promise<CheckInStatsResponseDto> {
     return this.getStatsUseCase.execute(eventId);
   }
 
   @Post('events/:eventId/check-ins/manual')
-  @Roles('staff', 'organizer', 'admin')
-  @ApiOperation({ summary: 'Check-in manual (fallback sem QR)' })
+  @Roles('manager')
+  @ApiOperation({ summary: 'Check-in manual (fallback sem QR)', description: 'Role `manager` ou `admin`. Retorna 409 em caso de duplicata.' })
   @ApiParam({ name: 'eventId', example: 'evt-123' })
   @ApiResponse({ status: 201, type: CheckInDto })
   @ApiResponse({ status: 400, description: 'Body inválido' })
   @ApiResponse({ status: 401, description: 'Token inválido/ausente' })
-  @ApiResponse({ status: 403, description: 'Role insuficiente' })
+  @ApiResponse({ status: 403, description: 'Role insuficiente (requer manager)' })
   @ApiResponse({ status: 409, description: 'Participante já fez check-in', type: CheckInDto })
   @ApiResponse({ status: 422, description: 'Participante não inscrito ou não confirmado' })
   @ApiResponse({ status: 503, description: 'Registration Service ou DynamoDB indisponível' })
@@ -125,19 +135,22 @@ export class CheckInController {
     return this.manualCheckInUseCase.execute(
       eventId,
       body.userId,
-      request.user?.keycloakUserId ?? body.performedBy,
+      request.user?.userId ?? body.performedBy,
       body.reason,
     );
   }
 
   @Get('events/:eventId/check-ins/:userId')
-  @Roles('user', 'organizer', 'admin')
-  @ApiOperation({ summary: 'Consulta check-in de um participante', description: 'Role user só pode consultar o próprio.' })
+  @Roles('participant')
+  @ApiOperation({
+    summary: 'Consulta check-in de um participante',
+    description: 'Role `participant` só pode consultar o próprio. `manager`/`admin` podem consultar qualquer um.',
+  })
   @ApiParam({ name: 'eventId', example: 'evt-123' })
-  @ApiParam({ name: 'userId', description: 'Keycloak user ID', example: 'uuid-keycloak' })
+  @ApiParam({ name: 'userId', description: 'ID do participante (sub do JWT)', example: 'uuid' })
   @ApiResponse({ status: 200, type: CheckInDto })
   @ApiResponse({ status: 401, description: 'Token inválido/ausente' })
-  @ApiResponse({ status: 403, description: 'Usuário tentando ver check-in de terceiro' })
+  @ApiResponse({ status: 403, description: 'Participante tentando ver check-in de terceiro' })
   @ApiResponse({ status: 404, description: 'Participante ainda não fez check-in' })
   @ApiResponse({ status: 503, description: 'DynamoDB indisponível' })
   async getUserCheckIn(
@@ -145,11 +158,11 @@ export class CheckInController {
     @Param('userId') userId: string,
     @Req() request: any,
   ): Promise<CheckInDto> {
-    const caller: string = request.user?.keycloakUserId;
+    const caller: string = request.user?.userId;
     if (
       caller !== userId &&
-      !request.user?.roles?.includes('admin') &&
-      !request.user?.roles?.includes('organizer')
+      !request.user?.scopes?.includes('admin') &&
+      !request.user?.scopes?.includes('manager')
     ) {
       throw new ForbiddenException('Insufficient permissions');
     }

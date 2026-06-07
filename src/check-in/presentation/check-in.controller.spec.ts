@@ -41,9 +41,9 @@ const baseCheckIn = {
 
 // ─── Mock de usuário autenticado ─────────────────────────────────────────────
 
-type MockUser = { keycloakUserId: string; roles: string[]; email?: string };
+type MockUser = { userId: string; scopes: string[]; email?: string };
 
-let currentUser: MockUser = { keycloakUserId: USER_ID, roles: ['user'] };
+let currentUser: MockUser = { userId: USER_ID, scopes: ['participant'] };
 
 const mockJwtGuard = {
   canActivate: (ctx: ExecutionContext) => {
@@ -96,11 +96,11 @@ describe('CheckInController (HTTP edge cases)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    currentUser = { keycloakUserId: USER_ID, roles: ['user'] };
+    currentUser = { userId: USER_ID, scopes: ['participant'] };
   });
 
-  const asUser = (keycloakUserId: string, roles: string[]) => {
-    currentUser = { keycloakUserId, roles };
+  const asUser = (userId: string, roles: string[]) => {
+    currentUser = { userId, scopes: roles };
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -109,7 +109,7 @@ describe('CheckInController (HTTP edge cases)', () => {
 
   describe('RolesGuard — 403 por role insuficiente', () => {
     it('staff gera QR (requer user/admin)', async () => {
-      asUser(STAFF_ID, ['staff']);
+      asUser(STAFF_ID, ['participant','manager']);
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/guests/${USER_ID}/qr-code`);
       expect(res.status).toBe(403);
     });
@@ -141,8 +141,8 @@ describe('CheckInController (HTTP edge cases)', () => {
       expect(res.status).toBe(403);
     });
 
-    it('staff vê stats (requer organizer/admin)', async () => {
-      asUser(STAFF_ID, ['staff']);
+    it('participant não vê stats (requer manager/admin)', async () => {
+      asUser(USER_ID, ['participant']);
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/check-ins/stats`);
       expect(res.status).toBe(403);
     });
@@ -153,7 +153,7 @@ describe('CheckInController (HTTP edge cases)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('Validação DTO — 400', () => {
-    beforeEach(() => asUser(STAFF_ID, ['staff']));
+    beforeEach(() => asUser(STAFF_ID, ['participant','manager']));
 
     it('scan sem token', async () => {
       const res = await request(app.getHttpServer()).post('/check-ins/scan').send({ eventId: 'e', scannedBy: 's' });
@@ -198,20 +198,20 @@ describe('CheckInController (HTTP edge cases)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('GET /events/:eventId/guests/:userId/qr-code', () => {
-    it('200 — user gera próprio QR (keycloakUserId === userId)', async () => {
+    it('200 — user gera próprio QR (userId === userId)', async () => {
       mockGenerateQrCode.execute.mockResolvedValue({ token: 'tok', qrPayload: 'checkin://tok', expiresAt: '' });
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/guests/${USER_ID}/qr-code`);
       expect(res.status).toBe(200);
     });
 
-    it('403 — user gera QR de outro (keycloakUserId !== userId, não é admin)', async () => {
+    it('403 — user gera QR de outro (userId !== userId, não é admin)', async () => {
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/guests/outro-id/qr-code`);
       expect(res.status).toBe(403);
       expect(mockGenerateQrCode.execute).not.toHaveBeenCalled();
     });
 
     it('200 — admin gera QR para qualquer userId', async () => {
-      asUser('admin-001', ['admin']);
+      asUser('admin-001', ['participant','manager','admin']);
       mockGenerateQrCode.execute.mockResolvedValue({ token: 't', qrPayload: 'c://t', expiresAt: '' });
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/guests/qualquer-user/qr-code`);
       expect(res.status).toBe(200);
@@ -223,7 +223,7 @@ describe('CheckInController (HTTP edge cases)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('POST /check-ins/scan', () => {
-    beforeEach(() => asUser(STAFF_ID, ['staff']));
+    beforeEach(() => asUser(STAFF_ID, ['participant','manager']));
 
     it('201 — scan bem-sucedido', async () => {
       mockScanQrCode.execute.mockResolvedValue(baseCheckIn);
@@ -232,7 +232,7 @@ describe('CheckInController (HTTP edge cases)', () => {
       expect(res.body.checkInId).toBe('ci-1');
     });
 
-    it('usa keycloakUserId como scannedBy (não o campo do body)', async () => {
+    it('usa userId como scannedBy (não o campo do body)', async () => {
       mockScanQrCode.execute.mockResolvedValue(baseCheckIn);
       await request(app.getHttpServer()).post('/check-ins/scan').send({ token: 'tok', eventId: EVENT_ID, scannedBy: 'body-value' });
       expect(mockScanQrCode.execute).toHaveBeenCalledWith('tok', EVENT_ID, STAFF_ID);
@@ -260,7 +260,7 @@ describe('CheckInController (HTTP edge cases)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('GET /events/:eventId/check-ins', () => {
-    beforeEach(() => asUser(ORG_ID, ['organizer']));
+    beforeEach(() => asUser(ORG_ID, ['participant','manager']));
 
     it('200 — lista com paginação padrão', async () => {
       mockListEventCheckIns.execute.mockResolvedValue({ data: [baseCheckIn], total: 1, page: 1, limit: 20 });
@@ -288,14 +288,14 @@ describe('CheckInController (HTTP edge cases)', () => {
     });
 
     it('200 — organizer consulta check-in de qualquer user', async () => {
-      asUser(ORG_ID, ['organizer']);
+      asUser(ORG_ID, ['participant','manager']);
       mockGetUserCheckIn.execute.mockResolvedValue(baseCheckIn);
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/check-ins/${USER_ID}`);
       expect(res.status).toBe(200);
     });
 
     it('404 — check-in não encontrado', async () => {
-      asUser(ORG_ID, ['organizer']);
+      asUser(ORG_ID, ['participant','manager']);
       const { NotFoundException } = await import('@nestjs/common');
       mockGetUserCheckIn.execute.mockRejectedValue(new NotFoundException('Check-in not found'));
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/check-ins/${USER_ID}`);
@@ -309,7 +309,7 @@ describe('CheckInController (HTTP edge cases)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('POST /events/:eventId/check-ins/manual', () => {
-    beforeEach(() => asUser(STAFF_ID, ['staff']));
+    beforeEach(() => asUser(STAFF_ID, ['participant','manager']));
 
     it('201 — manual com reason', async () => {
       const rec = { ...baseCheckIn, method: CheckInMethod.Manual, reason: 'QR quebrado', tokenJti: null };
@@ -320,7 +320,7 @@ describe('CheckInController (HTTP edge cases)', () => {
       expect(res.body.reason).toBe('QR quebrado');
     });
 
-    it('usa keycloakUserId como performedBy', async () => {
+    it('usa userId como performedBy', async () => {
       mockManualCheckIn.execute.mockResolvedValue(baseCheckIn);
       await request(app.getHttpServer())
         .post(`/events/${EVENT_ID}/check-ins/manual`).send({ userId: USER_ID, performedBy: 'body-value' });
@@ -351,7 +351,7 @@ describe('CheckInController (HTTP edge cases)', () => {
 
   describe('GET /events/:eventId/check-ins/stats', () => {
     it('200 — retorna breakdown por role organizer', async () => {
-      asUser(ORG_ID, ['organizer']);
+      asUser(ORG_ID, ['participant','manager']);
       mockGetStats.execute.mockResolvedValue({ eventId: EVENT_ID, totalCheckIns: 10, byMethod: { qr_code: 8, manual: 2 }, qrAudits: 12 });
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/check-ins/stats`);
       expect(res.status).toBe(200);
@@ -366,7 +366,7 @@ describe('CheckInController (HTTP edge cases)', () => {
   describe('Formato da resposta (ADR-008)', () => {
     it('erros usam campo "detail" (não "message")', async () => {
       const { NotFoundException } = await import('@nestjs/common');
-      asUser(ORG_ID, ['organizer']);
+      asUser(ORG_ID, ['participant','manager']);
       mockGetUserCheckIn.execute.mockRejectedValue(new NotFoundException('not found'));
       const res = await request(app.getHttpServer()).get(`/events/${EVENT_ID}/check-ins/${USER_ID}`);
       expect(res.body).toHaveProperty('detail');
@@ -374,7 +374,7 @@ describe('CheckInController (HTTP edge cases)', () => {
     });
 
     it('x-trace-id é ecoado no response', async () => {
-      asUser(ORG_ID, ['organizer']);
+      asUser(ORG_ID, ['participant','manager']);
       mockGetStats.execute.mockResolvedValue({ eventId: EVENT_ID, totalCheckIns: 0, byMethod: {}, qrAudits: 0 });
       const res = await request(app.getHttpServer())
         .get(`/events/${EVENT_ID}/check-ins/stats`).set('x-trace-id', 'trace-keycloak-42');
@@ -382,7 +382,7 @@ describe('CheckInController (HTTP edge cases)', () => {
     });
 
     it('404 — rota inexistente', async () => {
-      asUser('admin-001', ['admin']);
+      asUser('admin-001', ['participant','manager','admin']);
       const res = await request(app.getHttpServer()).get('/nao-existe');
       expect(res.status).toBe(404);
     });

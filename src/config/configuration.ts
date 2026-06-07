@@ -1,10 +1,7 @@
 export interface AppConfiguration {
   port: number;
-  // Keycloak / Auth Service
-  keycloakUrl: string;
-  keycloakIssuerUrl: string;
-  keycloakRealm: string;
-  keycloakClientId: string;
+  // Auth Service (Python FastAPI — JWT RS256 via JWKS)
+  authServiceUrl: string;
   // AWS
   awsRegion: string;
   dynamoTableName: string;
@@ -25,10 +22,7 @@ export function configuration(): AppConfiguration {
   const keycloakUrl = process.env.KEYCLOAK_URL ?? 'http://localhost:8080';
   return {
     port: Number(process.env.PORT ?? 3000),
-    keycloakUrl,
-    keycloakIssuerUrl: process.env.KEYCLOAK_ISSUER_URL ?? keycloakUrl,
-    keycloakRealm: process.env.KEYCLOAK_REALM ?? 'event-system',
-    keycloakClientId: process.env.KEYCLOAK_CLIENT_ID ?? 'nest-api',
+    authServiceUrl: process.env.AUTH_SERVICE_URL ?? 'http://localhost:8080',
     awsRegion: process.env.AWS_REGION ?? 'us-east-1',
     dynamoTableName: process.env.DYNAMODB_TABLE_NAME ?? 'check-in-service',
     dynamoEndpoint: process.env.DYNAMODB_ENDPOINT,

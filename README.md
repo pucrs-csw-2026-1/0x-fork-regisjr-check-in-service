@@ -89,25 +89,33 @@ sequenceDiagram
 
 ### 1.3. Integration with the Auth Service
 
-The check-in service does **not** issue its own user tokens. It consumes JWTs minted by the external Auth Service and acts as a **resource server**. Concretely:
+The check-in service does **not** issue its own user tokens. It consumes JWTs minted by the **Auth Service** (Python FastAPI, running at `AUTH_SERVICE_URL`) and acts as a **resource server**. Concretely:
 
 - Every protected endpoint expects an `Authorization: Bearer <access_token>` header.
-- The access token is a JWT HS256 with the claims `sub` (user id), `scopes` (array of role names — e.g. `["user"]` or `["user", "admin"]`), `exp` and `iat`.
-- The check-in service validates the token **locally**: it loads the shared `AUTH_JWT_SECRET` from AWS Secrets Manager, verifies the HS256 signature, checks `exp`, and enforces the required scope per endpoint.
-- No call to the Auth Service is made on each request — that would defeat the purpose of stateless tokens.
+- The access token is a **JWT RS256** signed by the Auth Service's RSA private key. The check-in service verifies the signature using the public key fetched from `{AUTH_SERVICE_URL}/.well-known/jwks.json`.
+- The token payload contains `sub` (user UUID), `scopes` (cumulative role array), `type: "access"`, and `principal_type: "user"`.
+- No call to the Auth Service is made per request — stateless validation via JWKS cache.
 
-#### Required scopes per endpoint
+#### Auth Service role model
 
-| Endpoint | Required scope |
+The Auth Service defines three roles with a **cumulative hierarchy** (ADMIN ⊇ MANAGER ⊇ PARTICIPANT). A user's token always includes all scopes of roles below it:
+
+| Role | Scopes in JWT |
 |---|---|
-| `GET /events/{id}/guests/{userId}/qr-code` | `user` (and `sub` must equal `userId`, unless `admin`) |
-| `POST /check-ins/scan` | `staff`, `organizer`, or `admin` |
-| `GET /events/{id}/check-ins` | `organizer` or `admin` |
-| `GET /events/{id}/check-ins/{userId}` | `user` (self) or `organizer` or `admin` |
-| `POST /events/{id}/check-ins/manual` | `staff`, `organizer`, or `admin` |
-| `GET /events/{id}/check-ins/stats` | `organizer` or `admin` |
+| `PARTICIPANT` | `["participant"]` |
+| `MANAGER` | `["participant", "manager"]` |
+| `ADMIN` | `["participant", "manager", "admin"]` |
 
-> Two scopes are introduced beyond the Auth Service catalog (`user`, `admin`): `staff` and `organizer`. These can be added to the Auth Service `access_level` catalog with deterministic UUIDs, mirroring the existing pattern.
+#### Required roles per endpoint
+
+| Endpoint | Required role |
+|---|---|
+| `GET /events/{id}/guests/{userId}/qr-code` | `participant` (self only; `admin` can generate for anyone) |
+| `POST /check-ins/scan` | `manager` |
+| `GET /events/{id}/check-ins` | `manager` |
+| `GET /events/{id}/check-ins/{userId}` | `participant` (self) or `manager` |
+| `POST /events/{id}/check-ins/manual` | `manager` |
+| `GET /events/{id}/check-ins/stats` | `manager` |
 
 ---
 
@@ -374,44 +382,79 @@ src/
 
 ---
 
-### ADR-008 — Bearer token validation for the access token
+### ADR-008 — Bearer token validation via Auth Service JWKS (RS256)
 
-**Status:** Accepted
+**Status:** Accepted  
+**Updated:** 2026-06-07 — migrado de HS256 simétrico para RS256 com JWKS do Auth Service
 
 #### Context
 
-Every protected endpoint requires authentication. The Auth Service issues HS256 JWTs with `sub` and `scopes` claims, and the check-in service must enforce both presence and scope.
+Every protected endpoint requires authentication. The system uses a shared **Auth Service** (Python FastAPI) that issues **RS256 JWTs** signed with an RSA private key. Public keys are exposed via a JWKS endpoint at `GET /.well-known/jwks.json`.
+
+The previous design assumed HS256 with a shared `AUTH_JWT_SECRET`. This was replaced after integration with the real Auth Service, which uses asymmetric signing — the check-in service never holds a private key.
 
 #### Decision
 
-Implement a `JwtAuthGuard` that:
+Use **`@nestjs/passport` + `passport-jwt` + `jwks-rsa`** to validate access tokens:
 
-1. Extracts the `Authorization: Bearer <token>` header.
-2. Loads `AUTH_JWT_SECRET` from Secrets Manager at boot (cached in memory; refreshed on signature failures).
-3. Verifies the HS256 signature and `exp`.
-4. Reads `sub` and `scopes` from the payload and attaches them to the request as `req.user`.
+1. Extracts `Authorization: Bearer <token>` header.
+2. Fetches the RS256 public key dynamically from `{AUTH_SERVICE_URL}/.well-known/jwks.json` (cached in memory, rate-limited to 10 req/min).
+3. Verifies the RS256 signature and `exp`.
+4. Validates `type === "access"` and `principal_type === "user"` to reject refresh tokens and service tokens.
+5. Reads `sub` (user UUID) and `scopes` (cumulative role array) from the payload, attaches as `req.user`.
 
-A complementary `ScopesGuard` (driven by an `@Scopes('admin', 'organizer')` decorator) compares the required scopes against `req.user.scopes` and returns `403` on mismatch.
+A complementary `RolesGuard` (driven by `@Roles('participant')`) compares required roles against `req.user.scopes`.
 
-For endpoints scoped to "self only" (e.g. `GET /qr-code`), the controller additionally checks that `req.user.sub === userId` unless the user has `admin` scope.
+#### JWT payload structure (Auth Service)
+
+```json
+{
+  "sub": "uuid-v4",
+  "scopes": ["participant", "manager"],
+  "principal_type": "user",
+  "type": "access",
+  "exp": 1234567890,
+  "email": "user@example.com"
+}
+```
+
+#### Role hierarchy (cumulative — Auth Service)
+
+| Role | Scopes in token | Check-in permissions |
+|---|---|---|
+| `PARTICIPANT` | `["participant"]` | Generate own QR, view own check-in |
+| `MANAGER` | `["participant", "manager"]` | + Scan, manual check-in, list, stats |
+| `ADMIN` | `["participant", "manager", "admin"]` | + Generate QR for anyone |
+
+Since scopes are cumulative, `@Roles('participant')` passes for all roles; `@Roles('manager')` passes for MANAGER and ADMIN only.
+
+#### Required roles per endpoint
+
+| Endpoint | Required role |
+|---|---|
+| `GET /events/{id}/guests/{userId}/qr-code` | `participant` (self) or `admin` |
+| `POST /check-ins/scan` | `manager` |
+| `GET /events/{id}/check-ins` | `manager` |
+| `GET /events/{id}/check-ins/stats` | `manager` |
+| `POST /events/{id}/check-ins/manual` | `manager` |
+| `GET /events/{id}/check-ins/{userId}` | `participant` (self) or `manager` |
 
 #### Response on auth failure
 
 | Situation | Status | Body |
 |---|---|---|
-| Missing `Authorization` header | 401 | `{ "detail": "Missing token" }` |
-| Invalid signature or malformed JWT | 401 | `{ "detail": "Invalid token" }` |
-| Token expired | 401 | `{ "detail": "Token expired" }` |
-| Token valid but missing required scope | 403 | `{ "detail": "Insufficient permissions" }` |
-| Token valid but `sub` mismatch on self-scoped route | 403 | `{ "detail": "Insufficient permissions" }` |
-
-These status codes intentionally mirror the conventions used by the Auth Service so that frontend clients have a uniform error contract across the system.
+| Missing `Authorization` header | 401 | `{ "detail": "Unauthorized" }` |
+| Invalid signature or malformed JWT | 401 | `{ "detail": "Unauthorized" }` |
+| Token expired | 401 | `{ "detail": "Unauthorized" }` |
+| Token is a refresh_token (not access) | 401 | `{ "detail": "Unauthorized" }` |
+| Token valid but missing required role | 403 | `{ "detail": "Insufficient role permissions" }` |
+| Token valid but `sub` mismatch on self-only route | 403 | `{ "detail": "Insufficient permissions" }` |
 
 #### Consequences
 
-- The check-in service stays stateless — no session storage, no per-request call to the Auth Service
-- A revoked token (logout in the Auth Service) keeps working in this service until it expires (default 30 min). This trade-off is accepted given the short access-token lifetime and the criticality of low latency at the event entrance.
-- The secret must be kept in sync between services; rotation requires coordinated deployment
+- The check-in service never holds any auth secret — all verification uses the public key from JWKS
+- A revoked token keeps working until `exp` (default 30 min) — accepted trade-off for low-latency at the event entrance
+- JWKS key rotation is transparent: `jwks-rsa` fetches the new key automatically on next cache miss
 
 ---
 
@@ -722,7 +765,10 @@ classDiagram
 ### 5.2. Environment variables
 
 ```env
-PORT=3000
+PORT=3333
+
+# Auth Service — JWKS endpoint: {AUTH_SERVICE_URL}/.well-known/jwks.json
+AUTH_SERVICE_URL=http://localhost:8080
 
 # AWS
 AWS_REGION=us-east-1
@@ -732,15 +778,12 @@ SNS_ENDPOINT=http://localhost:4566
 SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:regisjr-check-in-events
 SECRETS_MANAGER_ENDPOINT=http://localhost:4566
 
-# QR JWT (signed by this service)
+# QR JWT (HS256 — assinado e verificado exclusivamente por este serviço)
 QR_JWT_SECRET_ID=regisjr/check-in/qr-jwt-secret
+QR_JWT_SECRET=checkin-qr-secret-dev-2026
 QR_JWT_TTL_SECONDS=300
 
-# Access token (verified — minted by Auth Service)
-AUTH_JWT_SECRET_ID=regisjr/auth/jwt-secret
-AUTH_JWT_ALGORITHM=HS256
-
-# Integration with the Registration Service
+# Registration Service
 REGISTRATION_SERVICE_URL=http://localhost:3001
 REGISTRATION_SERVICE_TIMEOUT_MS=500
 ```
