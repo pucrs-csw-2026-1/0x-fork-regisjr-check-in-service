@@ -3,9 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { AppConfiguration } from '../config/configuration';
 
-interface RegistrationResponse {
-  isRegistered: boolean;
-  isConfirmed: boolean;
+// Status returned by the Registration Service (manifestbolo-t2-registration)
+// REGISTERED  → user signed up but has not confirmed via e-mail token yet
+// CONFIRMED   → e-mail confirmation done; user may enter the event
+// CANCELLED   → registration cancelled / soft-deleted
+type RegistrationStatus = 'REGISTERED' | 'CONFIRMED' | 'CANCELLED';
+
+interface CheckInStatusResponse {
+  eventId: string;
+  userId: string;
+  status: RegistrationStatus;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 @Injectable()
@@ -24,25 +33,30 @@ export class RegistrationServiceClient {
     eventId: string,
     userId: string,
   ): Promise<{ isRegistered: boolean; isConfirmed: boolean }> {
-    const url = `/events/${eventId}/registrations/${userId}`;
+    // Endpoint designed specifically for the check-in service (manifestbolo-t2-registration)
+    const url = `/events/${eventId}/guests/${userId}/check-in`;
 
     try {
-      const { data } = await this.withRetry<RegistrationResponse>(() => this.http.get<RegistrationResponse>(url));
+      const { data } = await this.withRetry<CheckInStatusResponse>(
+        () => this.http.get<CheckInStatusResponse>(url),
+      );
 
-      if (!data.isRegistered || !data.isConfirmed) {
+      // Only CONFIRMED registrations may proceed to physical check-in.
+      // REGISTERED = e-mail not yet confirmed; CANCELLED = registration revoked.
+      if (data.status !== 'CONFIRMED') {
         throw new UnprocessableEntityException(
-          `User ${userId} is not registered or not confirmed for event ${eventId}`,
+          `User ${userId} registration is ${data.status} for event ${eventId} — only CONFIRMED registrations may check in`,
         );
       }
 
-      return data;
+      return { isRegistered: true, isConfirmed: true };
     } catch (err) {
       if (err instanceof UnprocessableEntityException) throw err;
 
       const axiosErr = err as AxiosError;
       if (axiosErr.response?.status === 404) {
         throw new UnprocessableEntityException(
-          `User ${userId} is not registered for event ${eventId}`,
+          `User ${userId} has no registration for event ${eventId}`,
         );
       }
 
