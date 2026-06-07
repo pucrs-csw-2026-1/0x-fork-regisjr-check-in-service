@@ -31,6 +31,16 @@ export class SecretsManagerService implements OnModuleInit {
       return this.cache.get(secretId)!;
     }
 
+    return this.loadSecret(secretId, envFallback);
+  }
+
+  // ADR-008: called by JwtAuthGuard on signature failure to refresh a potentially rotated secret
+  async refreshSecret(secretId: string): Promise<string> {
+    this.cache.delete(secretId);
+    return this.loadSecret(secretId, '');
+  }
+
+  private async loadSecret(secretId: string, envFallback: string): Promise<string> {
     if (this.client) {
       try {
         const command = new GetSecretValueCommand({ SecretId: secretId });
@@ -43,8 +53,7 @@ export class SecretsManagerService implements OnModuleInit {
       }
     }
 
-    const fallback = envFallback;
-    this.cache.set(secretId, fallback);
-    return fallback;
+    this.cache.set(secretId, envFallback);
+    return envFallback;
   }
 }

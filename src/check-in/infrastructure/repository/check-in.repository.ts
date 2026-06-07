@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { AppConfiguration } from '../../../config/configuration';
 import { DynamoDbService } from '../../../database/dynamo-db.service';
 import { CheckInRecord, QrCodeAuditRecord } from '../../domain/check-in.types';
+import { ICheckInRepository } from '../../domain/ports/check-in-repository.port';
 
 interface DynamoCheckInItem extends CheckInRecord {
   PK: string;
@@ -20,11 +21,13 @@ interface DynamoQrAuditItem extends QrCodeAuditRecord {
 }
 
 @Injectable()
-export class CheckInRepository {
+export class CheckInRepository extends ICheckInRepository {
   constructor(
     private readonly dynamo: DynamoDbService,
     private readonly configService: ConfigService<AppConfiguration>,
-  ) {}
+  ) {
+    super();
+  }
 
   private get tableName(): string {
     return this.configService.get<string>('dynamoTableName') ?? 'check-in-service';
@@ -36,7 +39,7 @@ export class CheckInRepository {
       PK: `EVENT#${record.eventId}`,
       SK: `CHECKIN#${record.userId}`,
       GSI1PK: `USER#${record.userId}`,
-      GSI1SK: `EVENT#${record.eventId}`,
+      GSI1SK: `CHECKIN#${record.eventId}`,
     };
 
     try {
@@ -81,7 +84,7 @@ export class CheckInRepository {
     });
 
     return {
-      items: result.items.map(this.toRecord),
+      items: result.items.map((i) => this.toRecord(i)),
       lastKey: result.lastKey,
     };
   }
@@ -101,14 +104,13 @@ export class CheckInRepository {
   }
 
   async countQrAudits(eventId: string): Promise<number> {
-    const result = await this.dynamo.query({
+    const result = await this.dynamo.query<DynamoQrAuditItem>({
       TableName: this.tableName,
       KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
       ExpressionAttributeValues: {
         ':pk': `EVENT#${eventId}`,
         ':prefix': 'QRAUDIT#',
       },
-      Select: 'COUNT',
     });
 
     return result.items.length;
