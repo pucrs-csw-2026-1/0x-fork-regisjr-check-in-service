@@ -20,16 +20,29 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const traceId = (request.headers['x-trace-id'] as string) ?? 'unknown';
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
-    let message = 'Internal server error';
+    let detail = 'Internal server error';
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const body = exception.getResponse();
-      message = typeof body === 'string' ? body : (body as { message?: string }).message ?? message;
+
+      // ADR-004/ADR-008: 409 Conflict with a CheckIn record passes through as-is
+      // so the scanner can see who already checked in and when
+      if (
+        status === HttpStatus.CONFLICT &&
+        typeof body === 'object' &&
+        body !== null &&
+        'checkInId' in body
+      ) {
+        response.status(status).json(body);
+        return;
+      }
+
+      detail = typeof body === 'string' ? body : (body as { message?: string }).message ?? detail;
     } else {
       this.logger.error('Unhandled exception', exception instanceof Error ? exception.stack : String(exception));
     }
 
-    response.status(status).json({ statusCode: status, message, traceId });
+    response.status(status).json({ statusCode: status, detail, traceId });
   }
 }

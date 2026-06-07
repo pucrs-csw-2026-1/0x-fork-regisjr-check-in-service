@@ -2,11 +2,9 @@ import { Injectable, Logger, ServiceUnavailableException, UnprocessableEntityExc
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { AppConfiguration } from '../config/configuration';
+import { IRegistrationClient } from '../check-in/domain/ports/registration-client.port';
 
 // Status returned by the Registration Service (manifestbolo-t2-registration)
-// REGISTERED  → user signed up but has not confirmed via e-mail token yet
-// CONFIRMED   → e-mail confirmation done; user may enter the event
-// CANCELLED   → registration cancelled / soft-deleted
 type RegistrationStatus = 'REGISTERED' | 'CONFIRMED' | 'CANCELLED';
 
 interface CheckInStatusResponse {
@@ -18,11 +16,12 @@ interface CheckInStatusResponse {
 }
 
 @Injectable()
-export class RegistrationServiceClient {
+export class RegistrationServiceClient extends IRegistrationClient {
   private readonly logger = new Logger(RegistrationServiceClient.name);
   private readonly http: AxiosInstance;
 
   constructor(private readonly configService: ConfigService<AppConfiguration>) {
+    super();
     const baseURL = this.configService.get<string>('registrationServiceUrl') ?? '';
     const timeout = this.configService.get<number>('registrationServiceTimeoutMs') ?? 500;
 
@@ -33,7 +32,6 @@ export class RegistrationServiceClient {
     eventId: string,
     userId: string,
   ): Promise<{ isRegistered: boolean; isConfirmed: boolean }> {
-    // Endpoint designed specifically for the check-in service (manifestbolo-t2-registration)
     const url = `/events/${eventId}/guests/${userId}/check-in`;
 
     try {
@@ -41,8 +39,6 @@ export class RegistrationServiceClient {
         () => this.http.get<CheckInStatusResponse>(url),
       );
 
-      // Only CONFIRMED registrations may proceed to physical check-in.
-      // REGISTERED = e-mail not yet confirmed; CANCELLED = registration revoked.
       if (data.status !== 'CONFIRMED') {
         throw new UnprocessableEntityException(
           `User ${userId} registration is ${data.status} for event ${eventId} — only CONFIRMED registrations may check in`,
