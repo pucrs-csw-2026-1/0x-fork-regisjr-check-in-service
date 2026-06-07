@@ -2,18 +2,26 @@ import { Injectable, Logger, ServiceUnavailableException, UnprocessableEntityExc
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { AppConfiguration } from '../config/configuration';
+import { IRegistrationClient } from '../check-in/domain/ports/registration-client.port';
 
-interface RegistrationResponse {
-  isRegistered: boolean;
-  isConfirmed: boolean;
+// Status returned by the Registration Service (manifestbolo-t2-registration)
+type RegistrationStatus = 'REGISTERED' | 'CONFIRMED' | 'CANCELLED';
+
+interface CheckInStatusResponse {
+  eventId: string;
+  userId: string;
+  status: RegistrationStatus;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 @Injectable()
-export class RegistrationServiceClient {
+export class RegistrationServiceClient extends IRegistrationClient {
   private readonly logger = new Logger(RegistrationServiceClient.name);
   private readonly http: AxiosInstance;
 
   constructor(private readonly configService: ConfigService<AppConfiguration>) {
+    super();
     const baseURL = this.configService.get<string>('registrationServiceUrl') ?? '';
     const timeout = this.configService.get<number>('registrationServiceTimeoutMs') ?? 500;
 
@@ -24,25 +32,27 @@ export class RegistrationServiceClient {
     eventId: string,
     userId: string,
   ): Promise<{ isRegistered: boolean; isConfirmed: boolean }> {
-    const url = `/events/${eventId}/registrations/${userId}`;
+    const url = `/events/${eventId}/guests/${userId}/check-in`;
 
     try {
-      const { data } = await this.withRetry<RegistrationResponse>(() => this.http.get<RegistrationResponse>(url));
+      const { data } = await this.withRetry<CheckInStatusResponse>(
+        () => this.http.get<CheckInStatusResponse>(url),
+      );
 
-      if (!data.isRegistered || !data.isConfirmed) {
+      if (data.status !== 'CONFIRMED') {
         throw new UnprocessableEntityException(
-          `User ${userId} is not registered or not confirmed for event ${eventId}`,
+          `User ${userId} registration is ${data.status} for event ${eventId} — only CONFIRMED registrations may check in`,
         );
       }
 
-      return data;
+      return { isRegistered: true, isConfirmed: true };
     } catch (err) {
       if (err instanceof UnprocessableEntityException) throw err;
 
       const axiosErr = err as AxiosError;
       if (axiosErr.response?.status === 404) {
         throw new UnprocessableEntityException(
-          `User ${userId} is not registered for event ${eventId}`,
+          `User ${userId} has no registration for event ${eventId}`,
         );
       }
 

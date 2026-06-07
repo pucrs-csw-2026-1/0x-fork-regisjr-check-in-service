@@ -33,26 +33,33 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const token = authorizationHeader.slice('Bearer '.length).trim();
-
     const secretId = this.configService.get<string>('authJwtSecretId') ?? '';
     const envSecret = this.configService.get<string>('authJwtSecret') ?? '';
-    const secret = await this.secretsManagerService.getSecret(secretId, envSecret);
 
-    if (!secret) {
-      throw new UnauthorizedException('Missing auth secret');
-    }
+    let secret = await this.secretsManagerService.getSecret(secretId, envSecret);
+    if (!secret) throw new UnauthorizedException('Missing auth secret');
 
     try {
       const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AccessTokenPayload;
-      request.user = {
-        sub: payload.sub,
-        scopes: payload.scopes ?? [],
-      };
-
+      request.user = { sub: payload.sub, scopes: payload.scopes ?? [] };
       return true;
-    } catch (error) {
-      if (error instanceof jwt.TokenExpiredError) {
+    } catch (firstError) {
+      if (firstError instanceof jwt.TokenExpiredError) {
         throw new UnauthorizedException('Token expired');
+      }
+
+      if (firstError instanceof jwt.JsonWebTokenError) {
+        // ADR-008: signature failure may indicate secret rotation — refresh and retry once
+        secret = await this.secretsManagerService.refreshSecret(secretId, envSecret);
+        try {
+          const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AccessTokenPayload;
+          request.user = { sub: payload.sub, scopes: payload.scopes ?? [] };
+          return true;
+        } catch (retryError) {
+          if (retryError instanceof jwt.TokenExpiredError) {
+            throw new UnauthorizedException('Token expired');
+          }
+        }
       }
 
       throw new UnauthorizedException('Invalid token');

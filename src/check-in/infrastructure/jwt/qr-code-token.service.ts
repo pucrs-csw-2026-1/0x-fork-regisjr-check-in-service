@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 
 import { AppConfiguration } from '../../../config/configuration';
 import { SecretsManagerService } from '../../../secrets/secrets-manager.service';
+import { IQrCodeTokenService } from '../../domain/ports/qr-code-token-service.port';
 
 interface QrCodeClaims {
   eventId: string;
@@ -13,11 +14,13 @@ interface QrCodeClaims {
 }
 
 @Injectable()
-export class QrCodeTokenService {
+export class QrCodeTokenService extends IQrCodeTokenService {
   constructor(
     private readonly secretsManagerService: SecretsManagerService,
     private readonly configService: ConfigService<AppConfiguration>,
-  ) {}
+  ) {
+    super();
+  }
 
   async issue(
     eventId: string,

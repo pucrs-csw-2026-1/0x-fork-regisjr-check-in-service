@@ -2,14 +2,17 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { AppConfiguration } from '../config/configuration';
+import { IEventPublisher } from '../check-in/domain/ports/event-publisher.port';
 
 @Injectable()
-export class SnsPublisherService implements OnModuleInit {
+export class SnsPublisherService extends IEventPublisher implements OnModuleInit {
   private readonly logger = new Logger(SnsPublisherService.name);
   private client!: SNSClient;
   private topicArn!: string;
 
-  constructor(private readonly configService: ConfigService<AppConfiguration>) {}
+  constructor(private readonly configService: ConfigService<AppConfiguration>) {
+    super();
+  }
 
   onModuleInit(): void {
     const region = this.configService.get<string>('awsRegion') ?? 'us-east-1';

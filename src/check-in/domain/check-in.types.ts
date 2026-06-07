@@ -4,6 +4,7 @@ export enum CheckInMethod {
 }
 
 export interface CheckInRecord {
+  entityType: 'CheckIn';
   checkInId: string;
   eventId: string;
   userId: string;
@@ -16,6 +17,7 @@ export interface CheckInRecord {
 }
 
 export interface QrCodeAuditRecord {
+  entityType: 'QrCodeAudit';
   eventId: string;
   userId: string;
   tokenJti: string;

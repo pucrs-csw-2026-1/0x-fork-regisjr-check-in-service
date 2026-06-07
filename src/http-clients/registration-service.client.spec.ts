@@ -36,35 +36,43 @@ describe('RegistrationServiceClient', () => {
     client = module.get(RegistrationServiceClient);
   });
 
-  it('should return registration data when participant is registered and confirmed', async () => {
-    mockGet.mockResolvedValue({ data: { isRegistered: true, isConfirmed: true } });
-
-    const result = await client.validateRegistration('event-1', 'user-1');
-    expect(result.isRegistered).toBe(true);
-    expect(result.isConfirmed).toBe(true);
+  it('calls the correct check-in endpoint (GET /events/:id/guests/:id/check-in)', async () => {
+    mockGet.mockResolvedValue({ data: { eventId: 'e', userId: 'u', status: 'CONFIRMED', createdAt: '', updatedAt: null } });
+    await client.validateRegistration('event-1', 'user-1');
+    expect(mockGet).toHaveBeenCalledWith('/events/event-1/guests/user-1/check-in');
   });
 
-  it('should throw UnprocessableEntityException when not registered', async () => {
-    mockGet.mockResolvedValue({ data: { isRegistered: false, isConfirmed: false } });
+  it('200 when status is CONFIRMED', async () => {
+    mockGet.mockResolvedValue({ data: { status: 'CONFIRMED' } });
+    const result = await client.validateRegistration('event-1', 'user-1');
+    expect(result).toEqual({ isRegistered: true, isConfirmed: true });
+  });
 
+  it('422 when status is REGISTERED (e-mail not yet confirmed)', async () => {
+    mockGet.mockResolvedValue({ data: { status: 'REGISTERED' } });
     await expect(client.validateRegistration('event-1', 'user-1')).rejects.toThrow(
       UnprocessableEntityException,
     );
   });
 
-  it('should throw UnprocessableEntityException on 404', async () => {
+  it('422 when status is CANCELLED', async () => {
+    mockGet.mockResolvedValue({ data: { status: 'CANCELLED' } });
+    await expect(client.validateRegistration('event-1', 'user-1')).rejects.toThrow(
+      UnprocessableEntityException,
+    );
+  });
+
+  it('422 on 404 — user has no registration for event', async () => {
     const err = Object.assign(new Error('Not found'), { response: { status: 404 } });
     mockGet.mockRejectedValue(err);
-
     await expect(client.validateRegistration('event-1', 'user-1')).rejects.toThrow(
       UnprocessableEntityException,
     );
   });
 
-  it('should retry once on 5xx then throw ServiceUnavailableException', async () => {
+  it('retries once on 5xx then throws ServiceUnavailableException', async () => {
     const err = Object.assign(new Error('Server error'), { response: { status: 503 } });
     mockGet.mockRejectedValue(err);
-
     await expect(client.validateRegistration('event-1', 'user-1')).rejects.toThrow(
       ServiceUnavailableException,
     );
