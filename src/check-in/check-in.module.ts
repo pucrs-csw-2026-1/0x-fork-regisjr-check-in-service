@@ -5,6 +5,7 @@ import { DynamoDbService } from '../database/dynamo-db.service';
 import { RegistrationServiceClient } from '../http-clients/registration-service.client';
 import { SnsPublisherService } from '../messaging/sns-publisher.service';
 import { CheckInService } from './check-in.service';
+import { CheckInRepository } from './infrastructure/repository/check-in.repository';
 import { QrCodeTokenService } from './infrastructure/jwt/qr-code-token.service';
 import { CheckInController } from './presentation/check-in.controller';
 
@@ -16,6 +17,7 @@ import { CheckInController } from './presentation/check-in.controller';
     QrCodeTokenService,
     RegistrationServiceClient,
     DynamoDbService,
+    CheckInRepository,
     SnsPublisherService,
   ],
   exports: [CheckInService],

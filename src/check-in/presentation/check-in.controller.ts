@@ -1,4 +1,5 @@
 import { Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
@@ -23,6 +24,7 @@ export class CheckInController {
 
   @Get('events/:eventId/guests/:userId/qr-code')
   @Scopes('user', 'admin')
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
   @ApiOperation({ summary: 'Generate a QR code for a participant' })
   @ApiOkResponse({ type: GenerateQrCodeResponseDto })
   async generateQrCode(
@@ -61,24 +63,13 @@ export class CheckInController {
     return this.checkInService.listEventCheckIns(eventId, Number(page ?? 1), Number(limit ?? 20));
   }
 
-  @Get('events/:eventId/check-ins/:userId')
-  @Scopes('user', 'organizer', 'admin')
-  @ApiOperation({ summary: 'Fetch a specific user check-in for an event' })
-  @ApiOkResponse({ type: CheckInDto })
-  async getUserCheckIn(
-    @Param('eventId') eventId: string,
-    @Param('userId') userId: string,
-    @Req() request: any,
-  ): Promise<CheckInDto> {
-    if (
-      request.user?.sub !== userId &&
-      !request.user?.scopes?.includes('admin') &&
-      !request.user?.scopes?.includes('organizer')
-    ) {
-      throw new ForbiddenException('Insufficient permissions');
-    }
-
-    return this.checkInService.getUserCheckIn(eventId, userId);
+  // Static route declared BEFORE the dynamic :userId route to avoid routing conflict
+  @Get('events/:eventId/check-ins/stats')
+  @Scopes('organizer', 'admin')
+  @ApiOperation({ summary: 'Get attendance statistics for an event' })
+  @ApiOkResponse({ type: CheckInStatsResponseDto })
+  async getStats(@Param('eventId') eventId: string): Promise<CheckInStatsResponseDto> {
+    return this.checkInService.getStats(eventId);
   }
 
   @Post('events/:eventId/check-ins/manual')
@@ -97,11 +88,23 @@ export class CheckInController {
     });
   }
 
-  @Get('events/:eventId/check-ins/stats')
-  @Scopes('organizer', 'admin')
-  @ApiOperation({ summary: 'Get attendance statistics for an event' })
-  @ApiOkResponse({ type: CheckInStatsResponseDto })
-  async getStats(@Param('eventId') eventId: string): Promise<CheckInStatsResponseDto> {
-    return this.checkInService.getStats(eventId);
+  @Get('events/:eventId/check-ins/:userId')
+  @Scopes('user', 'organizer', 'admin')
+  @ApiOperation({ summary: 'Fetch a specific user check-in for an event' })
+  @ApiOkResponse({ type: CheckInDto })
+  async getUserCheckIn(
+    @Param('eventId') eventId: string,
+    @Param('userId') userId: string,
+    @Req() request: any,
+  ): Promise<CheckInDto> {
+    if (
+      request.user?.sub !== userId &&
+      !request.user?.scopes?.includes('admin') &&
+      !request.user?.scopes?.includes('organizer')
+    ) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+
+    return this.checkInService.getUserCheckIn(eventId, userId);
   }
 }

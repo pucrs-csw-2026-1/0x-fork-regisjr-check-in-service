@@ -4,7 +4,11 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
+
+import { AppConfiguration } from '../config/configuration';
+import { SecretsManagerService } from '../secrets/secrets-manager.service';
 
 interface AccessTokenPayload {
   sub: string;
@@ -15,7 +19,12 @@ interface AccessTokenPayload {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
+  constructor(
+    private readonly secretsManagerService: SecretsManagerService,
+    private readonly configService: ConfigService<AppConfiguration>,
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authorizationHeader: string | undefined = request.headers?.authorization;
 
@@ -24,7 +33,10 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const token = authorizationHeader.slice('Bearer '.length).trim();
-    const secret = process.env.AUTH_JWT_SECRET;
+
+    const secretId = this.configService.get<string>('authJwtSecretId') ?? '';
+    const envSecret = this.configService.get<string>('authJwtSecret') ?? '';
+    const secret = await this.secretsManagerService.getSecret(secretId, envSecret);
 
     if (!secret) {
       throw new UnauthorizedException('Missing auth secret');

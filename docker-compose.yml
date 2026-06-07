@@ -1,0 +1,41 @@
+version: '3.9'
+
+services:
+  check-in-service:
+    build: .
+    ports:
+      - '3000:3000'
+    env_file: .env
+    environment:
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      SNS_ENDPOINT: http://localstack:4566
+      SECRETS_MANAGER_ENDPOINT: http://localstack:4566
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - '8000:8000'
+    command: -jar DynamoDBLocal.jar -sharedDb -inMemory
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - '4566:4566'
+    environment:
+      SERVICES: sns,secretsmanager
+      DEFAULT_REGION: us-east-1
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4566/_localstack/health']
+      interval: 5s
+      timeout: 3s
+      retries: 20
