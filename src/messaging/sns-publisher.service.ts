@@ -31,7 +31,7 @@ export class SnsPublisherService extends IEventPublisher implements OnModuleInit
         MessageAttributes: {
           eventType: {
             DataType: 'String',
-            StringValue: (event as { eventType: string }).eventType,
+            StringValue: (event as { event_type: string }).event_type,
           },
         },
       }),

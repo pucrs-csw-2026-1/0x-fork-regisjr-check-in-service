@@ -97,12 +97,21 @@ describe('ScanQrCodeUseCase', () => {
     expect(repo.save).not.toHaveBeenCalled();
   });
 
-  it('publishes CheckInCompleted event after saving', async () => {
+  it('publishes CheckInPerformed with the canonical envelope after saving', async () => {
     await useCase.execute('tok', EVENT_ID, STAFF_ID);
     // fire-and-forget — give microtask queue a tick
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(eventPublisher.publish).toHaveBeenCalledWith(expect.objectContaining({
-      eventType: 'CheckInCompleted',
+      event_type: 'CheckInPerformed',
+      source: 'checkin-events',
+      event_id: EVENT_ID,
+      version: '1.0',
+      data: expect.objectContaining({
+        event_id: EVENT_ID,
+        attendant_id: USER_ID,
+        method: CheckInMethod.QrCode,
+        scanned_by: STAFF_ID,
+      }),
     }));
   });
 });

@@ -50,21 +50,26 @@ export class ManualCheckInUseCase {
 
   private async publishEvent(record: CheckInRecord, now: string): Promise<void> {
     try {
+      // Envelope canônico (US-08, ADR-0009 do Metrics): flat snake_case + `data`,
+      // event_type/tópico que o consumidor de SQS do T2 espera.
       await this.eventPublisher.publish({
-        eventType: 'CheckInCompleted',
+        event_id: record.eventId,
+        event_type: 'CheckInPerformed',
+        source: 'checkin-events',
+        occurred_at: now,
+        resource_ref: record.checkInId,
         version: '1.0',
-        occurredAt: now,
         data: {
-          checkInId: record.checkInId,
-          eventId: record.eventId,
-          userId: record.userId,
-          checkedInAt: record.checkedInAt,
+          event_id: record.eventId,
+          attendant_id: record.userId,
+          checked_in_at: record.checkedInAt,
           method: record.method,
-          scannedBy: record.scannedBy,
+          scanned_by: record.scannedBy,
+          ...(record.reason != null ? { reason: record.reason } : {}),
         },
       });
     } catch (err) {
-      this.logger.error('Failed to publish CheckInCompleted to SNS', (err as Error).message);
+      this.logger.error('Failed to publish CheckInPerformed to SNS', (err as Error).message);
     }
   }
 }
