@@ -6,9 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
+import { JwksClient } from 'jwks-rsa';
 
 import { AppConfiguration } from '../config/configuration';
-import { SecretsManagerService } from '../secrets/secrets-manager.service';
 
 interface AccessTokenPayload {
   sub: string;
@@ -17,12 +17,24 @@ interface AccessTokenPayload {
   exp?: number;
 }
 
+/**
+ * US-08: valida o JWT do usuário contra o **JWKS do Auth (T1)** — RS256, auth
+ * único da plataforma. Substitui a validação por segredo HMAC compartilhado.
+ * A chave pública é resolvida por `kid` a partir do JWKS remoto (com cache).
+ */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(
-    private readonly secretsManagerService: SecretsManagerService,
-    private readonly configService: ConfigService<AppConfiguration>,
-  ) {}
+  private client: JwksClient | null = null;
+
+  constructor(private readonly configService: ConfigService<AppConfiguration>) {}
+
+  private getClient(): JwksClient {
+    if (!this.client) {
+      const jwksUri = this.configService.get<string>('authJwksUrl') ?? '';
+      this.client = new JwksClient({ jwksUri, cache: true, rateLimit: true });
+    }
+    return this.client;
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
@@ -33,35 +45,32 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const token = authorizationHeader.slice('Bearer '.length).trim();
-    const secretId = this.configService.get<string>('authJwtSecretId') ?? '';
-    const envSecret = this.configService.get<string>('authJwtSecret') ?? '';
-
-    let secret = await this.secretsManagerService.getSecret(secretId, envSecret);
-    if (!secret) throw new UnauthorizedException('Missing auth secret');
+    const client = this.getClient();
 
     try {
-      const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AccessTokenPayload;
+      const payload = await new Promise<AccessTokenPayload>((resolve, reject) => {
+        jwt.verify(
+          token,
+          (header, callback) => {
+            client.getSigningKey(header.kid, (err, key) => {
+              if (err || !key) {
+                callback(err ?? new Error('signing key not found'));
+                return;
+              }
+              callback(null, key.getPublicKey());
+            });
+          },
+          { algorithms: ['RS256'] },
+          (err, decoded) => (err ? reject(err) : resolve(decoded as AccessTokenPayload)),
+        );
+      });
+
       request.user = { sub: payload.sub, scopes: payload.scopes ?? [] };
       return true;
-    } catch (firstError) {
-      if (firstError instanceof jwt.TokenExpiredError) {
+    } catch (err) {
+      if (err instanceof jwt.TokenExpiredError) {
         throw new UnauthorizedException('Token expired');
       }
-
-      if (firstError instanceof jwt.JsonWebTokenError) {
-        // ADR-008: signature failure may indicate secret rotation — refresh and retry once
-        secret = await this.secretsManagerService.refreshSecret(secretId, envSecret);
-        try {
-          const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as AccessTokenPayload;
-          request.user = { sub: payload.sub, scopes: payload.scopes ?? [] };
-          return true;
-        } catch (retryError) {
-          if (retryError instanceof jwt.TokenExpiredError) {
-            throw new UnauthorizedException('Token expired');
-          }
-        }
-      }
-
       throw new UnauthorizedException('Invalid token');
     }
   }

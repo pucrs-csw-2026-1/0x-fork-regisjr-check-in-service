@@ -1,17 +1,23 @@
+import { generateKeyPairSync } from 'crypto';
+
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import * as jwt from 'jsonwebtoken';
+import { JwksClient } from 'jwks-rsa';
 import request from 'supertest';
 
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { ScopesGuard } from '../../auth/scopes.guard';
-import { SecretsManagerService } from '../../secrets/secrets-manager.service';
 import { TraceIdMiddleware } from '../../common/middleware/trace-id.middleware';
 import { CheckInMethod } from '../domain/check-in.types';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
+
+// US-08: o guard valida RS256 via JWKS do Auth (T1). Nos testes mockamos o
+// JwksClient para devolver a chave pública do par de teste.
+jest.mock('jwks-rsa');
 
 import { GenerateQrCodeUseCase } from '../application/generate-qr-code.use-case';
 import { ScanQrCodeUseCase } from '../application/scan-qr-code.use-case';
@@ -24,14 +30,28 @@ import { CheckInController } from './check-in.controller';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
-const AUTH_SECRET = 'test-auth-secret';
 const EVENT_ID = 'event-abc';
 const USER_ID = 'user-xyz';
 const STAFF_ID = 'staff-001';
 const ORG_ID = 'org-001';
 
+// Par RS256 de teste (o "Auth" que assina) + um par alheio (token assinado por
+// chave desconhecida ao JWKS → inválido).
+const rsaOpts = {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki' as const, format: 'pem' as const },
+  privateKeyEncoding: { type: 'pkcs8' as const, format: 'pem' as const },
+};
+const authKeys = generateKeyPairSync('rsa', rsaOpts);
+const foreignKeys = generateKeyPairSync('rsa', rsaOpts);
+
 function makeToken(sub: string, scopes: string[], opts: jwt.SignOptions = {}): string {
-  return jwt.sign({ sub, scopes }, AUTH_SECRET, { algorithm: 'HS256', expiresIn: 300, ...opts });
+  return jwt.sign({ sub, scopes }, authKeys.privateKey, {
+    algorithm: 'RS256',
+    keyid: 'test-kid',
+    expiresIn: 300,
+    ...opts,
+  });
 }
 
 const userToken = () => makeToken(USER_ID, ['user']);
@@ -67,6 +87,16 @@ describe('CheckInController (HTTP edge cases)', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
+    (JwksClient as jest.MockedClass<typeof JwksClient>).mockImplementation(
+      () =>
+        ({
+          getSigningKey: (
+            _kid: string,
+            cb: (err: Error | null, key?: { getPublicKey: () => string }) => void,
+          ) => cb(null, { getPublicKey: () => authKeys.publicKey }),
+        }) as unknown as JwksClient,
+    );
+
     const module = await Test.createTestingModule({
       imports: [ThrottlerModule.forRoot({ throttlers: [{ ttl: 60000, limit: 100 }] })],
       controllers: [CheckInController],
@@ -77,8 +107,14 @@ describe('CheckInController (HTTP edge cases)', () => {
         { provide: ListEventCheckInsUseCase, useValue: mockListEventCheckIns },
         { provide: GetUserCheckInUseCase, useValue: mockGetUserCheckIn },
         { provide: GetStatsUseCase, useValue: mockGetStats },
-        { provide: SecretsManagerService, useValue: { getSecret: jest.fn().mockResolvedValue(AUTH_SECRET), refreshSecret: jest.fn().mockResolvedValue('') } },
-        { provide: ConfigService, useValue: { get: jest.fn((k: string) => k === 'authJwtSecretId' ? 'id' : k === 'authJwtSecret' ? AUTH_SECRET : undefined) } },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((k: string) =>
+              k === 'authJwksUrl' ? 'http://auth/.well-known/jwks.json' : undefined,
+            ),
+          },
+        },
         JwtAuthGuard,
         ScopesGuard,
         Reflector,
@@ -125,8 +161,11 @@ describe('CheckInController (HTTP edge cases)', () => {
       expect(res.body.detail).toMatch(/expired/i);
     });
 
-    it('401 — secret errado', async () => {
-      const wrong = jwt.sign({ sub: USER_ID, scopes: ['user'] }, 'errado', { algorithm: 'HS256' });
+    it('401 — assinado por chave desconhecida ao JWKS', async () => {
+      const wrong = jwt.sign({ sub: USER_ID, scopes: ['user'] }, foreignKeys.privateKey, {
+        algorithm: 'RS256',
+        keyid: 'test-kid',
+      });
       const res = await request(app.getHttpServer())
         .get(`/events/${EVENT_ID}/guests/${USER_ID}/qr-code`)
         .set('Authorization', `Bearer ${wrong}`);

@@ -10,6 +10,8 @@ export interface AppConfiguration {
   authJwtSecretId: string;
   qrJwtSecret: string;
   authJwtSecret: string;
+  // US-08: valida JWT de usuário via JWKS do Auth (T1, RS256) — auth único.
+  authJwksUrl: string;
   qrJwtTtlSeconds: number;
   registrationServiceUrl: string;
   registrationServiceTimeoutMs: number;
@@ -28,6 +30,7 @@ export function configuration(): AppConfiguration {
     authJwtSecretId: process.env.AUTH_JWT_SECRET_ID ?? 'regisjr/auth/jwt-secret',
     qrJwtSecret: process.env.QR_JWT_SECRET ?? '',
     authJwtSecret: process.env.AUTH_JWT_SECRET ?? '',
+    authJwksUrl: process.env.AUTH_JWKS_URL ?? 'http://localhost:8080/.well-known/jwks.json',
     qrJwtTtlSeconds: Number(process.env.QR_JWT_TTL_SECONDS ?? 300),
     registrationServiceUrl: process.env.REGISTRATION_SERVICE_URL ?? '',
     registrationServiceTimeoutMs: Number(process.env.REGISTRATION_SERVICE_TIMEOUT_MS ?? 500),
