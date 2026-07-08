@@ -1,41 +1,47 @@
-version: '3.9'
-
+# US-08: o check-in usa a Ministack COMPARTILHADA (a do auth-infra em :4566) e o
+# Auth T1 (:8080), como todos os serviços — NÃO sobe localstack/dynamodb próprios.
+# Pré-requisito: a stack do T1 (auth-infra + auth-backend) já no ar.
+# Ordem de subida: T1 (Ministack + Auth) -> T2 -> forks. Um `docker compose up`
+# provisiona a tabela/tópico/secrets na Ministack e sobe o serviço.
 services:
+  # Provisiona tabela DynamoDB + tópico SNS (checkin-events) + secrets do QR na
+  # Ministack compartilhada. Roda uma vez e sai; o app espera concluir.
+  setup:
+    image: amazon/aws-cli:latest
+    entrypoint: ['/bin/bash', '/scripts/setup-local-aws.sh']
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      DYNAMODB_ENDPOINT: http://host.docker.internal:4566
+      SNS_ENDPOINT: http://host.docker.internal:4566
+      DYNAMODB_TABLE_NAME: check-in-service
+      SNS_TOPIC_NAME: checkin-events
+    volumes:
+      - ./scripts:/scripts:ro
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
   check-in-service:
     build: .
     ports:
       - '3000:3000'
-    env_file: .env
     environment:
-      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
-      SNS_ENDPOINT: http://localstack:4566
-      SECRETS_MANAGER_ENDPOINT: http://localstack:4566
+      PORT: 3000
+      AWS_REGION: us-east-1
+      DYNAMODB_TABLE_NAME: check-in-service
+      DYNAMODB_ENDPOINT: http://host.docker.internal:4566
+      # Publica no tópico que o consumidor de SQS do Metrics (T2) assina.
+      SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:checkin-events
+      SNS_ENDPOINT: http://host.docker.internal:4566
+      SECRETS_MANAGER_ENDPOINT: http://host.docker.internal:4566
+      # Auth único da plataforma: valida o JWT de usuário via JWKS do T1 (RS256).
+      AUTH_JWKS_URL: http://host.docker.internal:8080/.well-known/jwks.json
+      # Valida a inscrição no fork Registration antes do check-in.
+      REGISTRATION_SERVICE_URL: http://host.docker.internal:3001
+      QR_JWT_SECRET: dev-qr-secret-change-in-production
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     depends_on:
-      dynamodb-local:
-        condition: service_healthy
-      localstack:
-        condition: service_healthy
-
-  dynamodb-local:
-    image: amazon/dynamodb-local:latest
-    ports:
-      - '8000:8000'
-    command: -jar DynamoDBLocal.jar -sharedDb -inMemory
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8000']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  localstack:
-    image: localstack/localstack:3
-    ports:
-      - '4566:4566'
-    environment:
-      SERVICES: sns,secretsmanager
-      DEFAULT_REGION: us-east-1
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:4566/_localstack/health']
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      setup:
+        condition: service_completed_successfully
