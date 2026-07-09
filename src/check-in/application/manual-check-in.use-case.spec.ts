@@ -78,7 +78,7 @@ describe('ManualCheckInUseCase', () => {
 
   it('validates registration before saving', async () => {
     await useCase.execute(EVENT_ID, USER_ID, STAFF_ID);
-    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID);
+    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID, undefined);
   });
 
   it('publishes CheckInPerformed with the canonical envelope + reason', async () => {

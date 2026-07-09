@@ -17,8 +17,8 @@ export class GenerateQrCodeUseCase {
     private readonly checkInRepository: ICheckInRepository,
   ) {}
 
-  async execute(eventId: string, userId: string): Promise<GenerateQrCodeResult> {
-    await this.registrationClient.validateRegistration(eventId, userId);
+  async execute(eventId: string, userId: string, accessToken?: string): Promise<GenerateQrCodeResult> {
+    await this.registrationClient.validateRegistration(eventId, userId, accessToken);
 
     const issued = await this.qrCodeTokenService.issue(eventId, userId);
 

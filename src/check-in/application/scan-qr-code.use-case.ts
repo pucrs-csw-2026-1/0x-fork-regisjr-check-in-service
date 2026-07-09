@@ -17,9 +17,14 @@ export class ScanQrCodeUseCase {
     private readonly eventPublisher: IEventPublisher,
   ) {}
 
-  async execute(token: string, eventId: string, scannedBy: string): Promise<CheckInRecord> {
+  async execute(
+    token: string,
+    eventId: string,
+    scannedBy: string,
+    accessToken?: string,
+  ): Promise<CheckInRecord> {
     const claims = await this.qrCodeTokenService.verify(token);
-    await this.registrationClient.validateRegistration(eventId, claims.userId);
+    await this.registrationClient.validateRegistration(eventId, claims.userId, accessToken);
 
     const existing = await this.checkInRepository.findByEventAndUser(eventId, claims.userId);
     if (existing) {

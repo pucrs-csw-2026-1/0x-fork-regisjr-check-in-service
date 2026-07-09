@@ -31,12 +31,18 @@ export class RegistrationServiceClient extends IRegistrationClient {
   async validateRegistration(
     eventId: string,
     userId: string,
+    accessToken?: string,
   ): Promise<{ isRegistered: boolean; isConfirmed: boolean }> {
     const url = `/events/${eventId}/guests/${userId}/check-in`;
+    // O endpoint de status de inscrição no Registration exige autenticação
+    // (manager/admin). Repassa o Bearer do chamador do check-in.
+    const config = accessToken
+      ? { headers: { Authorization: `Bearer ${accessToken}` } }
+      : undefined;
 
     try {
       const { data } = await this.withRetry<CheckInStatusResponse>(
-        () => this.http.get<CheckInStatusResponse>(url),
+        () => this.http.get<CheckInStatusResponse>(url, config),
       );
 
       if (data.status !== 'CONFIRMED') {
