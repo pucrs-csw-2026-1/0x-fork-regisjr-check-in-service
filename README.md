@@ -21,7 +21,7 @@ flowchart LR
     Organizer(["Organizer<br/>(dashboard)"])
 
     subgraph "External services"
-        Auth["Auth Service<br/>(FastAPI + JWT HS256)"]
+        Auth["Auth Service T1<br/>(JWKS · RS256)"]
         Registration["Registration Service<br/>(validates active enrollment)"]
         Certificates["Certificates Service<br/>(future — RF15)"]
     end
@@ -32,7 +32,7 @@ flowchart LR
 
     subgraph "AWS"
         DDB[("DynamoDB<br/>check-in table")]
-        SNS["SNS Topic<br/>check-in-events"]
+        SNS["SNS Topic<br/>checkin-events"]
         SQS["SQS<br/>(consumer queues)"]
         SM["Secrets Manager<br/>(QR JWT secret)"]
     end
@@ -48,7 +48,7 @@ flowchart LR
     API -->|"verify active enrollment"| Registration
     API -->|"read/write"| DDB
     API -->|"read secret"| SM
-    API -->|"publish CheckInCompleted"| SNS
+    API -->|"publish CheckInPerformed"| SNS
     SNS --> SQS
     SQS --> Certificates
 ```
@@ -83,7 +83,7 @@ sequenceDiagram
     CI->>REG: GET /events/{id}/guests/{userId}/check-in
     REG-->>CI: still valid
     CI->>DDB: PutItem (conditional, idempotent)
-    CI->>SNS: publish CheckInCompleted
+    CI->>SNS: publish CheckInPerformed
     CI-->>FE_S: 201 { checkInId, userId, checkedInAt }
 ```
 
@@ -92,9 +92,9 @@ sequenceDiagram
 The check-in service does **not** issue its own user tokens. It consumes JWTs minted by the external Auth Service and acts as a **resource server**. Concretely:
 
 - Every protected endpoint expects an `Authorization: Bearer <access_token>` header.
-- The access token is a JWT HS256 with the claims `sub` (user id), `scopes` (array of role names — e.g. `["user"]` or `["user", "admin"]`), `exp` and `iat`.
-- The check-in service validates the token **locally**: it loads the shared `AUTH_JWT_SECRET` from AWS Secrets Manager, verifies the HS256 signature, checks `exp`, and enforces the required scope per endpoint.
-- No call to the Auth Service is made on each request — that would defeat the purpose of stateless tokens.
+- The access token is a JWT RS256 minted by the Auth Service (T1), carrying the claims `sub` (user id), `scopes` (array of role names — e.g. `["user"]` or `["user", "admin"]`), `exp` and `iat`.
+- The check-in service validates the token **via JWKS/RS256**: it fetches the Auth Service's public keys from `AUTH_JWKS_URL` (e.g. `http://auth-backend:8080/.well-known/jwks.json`), verifies the RS256 signature, checks `exp`, and enforces the required scope per endpoint. It no longer loads a shared symmetric `AUTH_JWT_SECRET` for the access token.
+- Validation stays stateless: the public keys are cached (jwks-rsa) after the first fetch, so no call to the Auth Service is made on the per-request hot path — only an occasional key refresh.
 
 #### Required scopes per endpoint
 
@@ -129,7 +129,7 @@ The service must expose an HTTP API, persist check-ins, integrate with an extern
 - **Messaging:** Amazon SNS for fan-out (SDK v3)
 - **Secrets:** AWS Secrets Manager
 - **Docs:** Swagger UI at `GET /docs`
-- **Local dev:** Docker Compose with DynamoDB Local and LocalStack (for SNS + Secrets Manager)
+- **Local dev:** a single `docker compose up` (from the fork root) running against the **shared Ministack** (`auth-infra`, LocalStack on `:4566`) plus Auth T1 — the fork does not start its own DynamoDB Local or LocalStack; the compose `setup` service provisions the DynamoDB table, SNS topic and secrets on the shared Ministack (see 5.4)
 
 #### Consequences
 
@@ -168,7 +168,7 @@ The QR payload may optionally include a `checkin://` prefix to help physical rea
 
 The check-in service is both **issuer and verifier** of the QR token. There are no external verifiers, so the asymmetric overhead of RS256 (key distribution, JWKS endpoint) is unjustified. HS256 with a single secret is simpler and faster.
 
-> Note: this secret is **distinct** from the Auth Service's `SECRET_KEY`. The check-in service holds two secrets total: one to verify access tokens minted by the Auth Service (`AUTH_JWT_SECRET`), one to sign its own QR tokens (`QR_JWT_SECRET`).
+> Note: this secret is **distinct** from the Auth Service's signing keys. Access tokens minted by the Auth Service are verified against its public keys via JWKS/RS256 (see ADR-008), so the only secret this service holds is the one used to sign its own QR tokens (`QR_JWT_SECRET`).
 
 ---
 
@@ -267,13 +267,13 @@ Direct synchronous HTTP fan-out from the check-in service to each consumer would
 
 #### Decision
 
-Publish a `CheckInCompleted` event to an SNS topic `regisjr-check-in-events`. Each consumer creates its own SQS queue subscribed to the topic, with its own dead-letter queue.
+Publish a `CheckInPerformed` event to an SNS topic `checkin-events`. Each consumer creates its own SQS queue subscribed to the topic, with its own dead-letter queue.
 
 #### Event schema
 
 ```json
 {
-  "eventType": "CheckInCompleted",
+  "eventType": "CheckInPerformed",
   "version": "1.0",
   "occurredAt": "2026-05-19T20:30:00Z",
   "data": {
@@ -380,15 +380,15 @@ src/
 
 #### Context
 
-Every protected endpoint requires authentication. The Auth Service issues HS256 JWTs with `sub` and `scopes` claims, and the check-in service must enforce both presence and scope.
+Every protected endpoint requires authentication. The Auth Service (T1) issues RS256 JWTs with `sub` and `scopes` claims and publishes its public keys through a JWKS endpoint. The check-in service, as a resource server, must verify the signature against those public keys and enforce both presence and scope.
 
 #### Decision
 
 Implement a `JwtAuthGuard` that:
 
 1. Extracts the `Authorization: Bearer <token>` header.
-2. Loads `AUTH_JWT_SECRET` from Secrets Manager at boot (cached in memory; refreshed on signature failures).
-3. Verifies the HS256 signature and `exp`.
+2. Fetches the Auth Service's public keys from `AUTH_JWKS_URL` (e.g. `http://auth-backend:8080/.well-known/jwks.json`) and caches them in memory via `jwks-rsa`, selecting the key by the token's `kid` (cache refreshed on an unknown `kid`).
+3. Verifies the RS256 signature and `exp`.
 4. Reads `sub` and `scopes` from the payload and attaches them to the request as `req.user`.
 
 A complementary `ScopesGuard` (driven by an `@Scopes('admin', 'organizer')` decorator) compares the required scopes against `req.user.scopes` and returns `403` on mismatch.
@@ -411,7 +411,7 @@ These status codes intentionally mirror the conventions used by the Auth Service
 
 - The check-in service stays stateless — no session storage, no per-request call to the Auth Service
 - A revoked token (logout in the Auth Service) keeps working in this service until it expires (default 30 min). This trade-off is accepted given the short access-token lifetime and the criticality of low latency at the event entrance.
-- The secret must be kept in sync between services; rotation requires coordinated deployment
+- No shared symmetric secret to keep in sync: the Auth Service owns the private key and publishes only public keys via JWKS, so signing-key rotation is picked up automatically on the next cache refresh — no coordinated deployment of a shared secret. (The QR token still uses a local HS256 secret — see ADR-002.)
 
 ---
 
@@ -712,36 +712,35 @@ classDiagram
 
 | Resource | Production | Local (Docker Compose) |
 |---|---|---|
-| **DynamoDB** | Managed table `check-in-service` | DynamoDB Local on `:8000` |
-| **SNS** | Topic ARN `arn:aws:sns:us-east-1:...:regisjr-check-in-events` | LocalStack on `:4566` |
-| **Secrets Manager** | Secrets `regisjr/check-in/qr-jwt-secret`, `regisjr/auth/jwt-secret` | LocalStack |
+| **DynamoDB** | Managed table `check-in-service` | Table `check-in-service` on the shared Ministack (`auth-infra:4566`) |
+| **SNS** | Topic ARN `arn:aws:sns:us-east-1:...:checkin-events` | Topic `checkin-events` on the shared Ministack (`auth-infra:4566`) |
+| **Secrets Manager** | Secret `regisjr/check-in/qr-jwt-secret` | QR secret on the shared Ministack (`auth-infra:4566`) |
 | **CloudWatch Logs** | Log group `/regisjr/check-in-service` | stdout |
-| **Auth Service** | URL inside the VPC | `http://auth:8000` |
-| **Registration Service** | URL inside the VPC | `http://registration:3001` |
+| **Auth Service** | URL inside the VPC | Auth T1 via `http://auth-backend:8080` (JWKS at `/.well-known/jwks.json`) |
+| **Registration Service** | URL inside the VPC | `http://registration-api:8000` |
 
 ### 5.2. Environment variables
 
 ```env
 PORT=3000
 
-# AWS
+# AWS — shared Ministack (auth-infra) endpoints
 AWS_REGION=us-east-1
-DYNAMODB_ENDPOINT=http://localhost:8000
+DYNAMODB_ENDPOINT=http://auth-infra:4566
 DYNAMODB_TABLE_NAME=check-in-service
-SNS_ENDPOINT=http://localhost:4566
-SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:regisjr-check-in-events
-SECRETS_MANAGER_ENDPOINT=http://localhost:4566
+SNS_ENDPOINT=http://auth-infra:4566
+SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:checkin-events
+SECRETS_MANAGER_ENDPOINT=http://auth-infra:4566
 
 # QR JWT (signed by this service)
 QR_JWT_SECRET_ID=regisjr/check-in/qr-jwt-secret
 QR_JWT_TTL_SECONDS=300
 
-# Access token (verified — minted by Auth Service)
-AUTH_JWT_SECRET_ID=regisjr/auth/jwt-secret
-AUTH_JWT_ALGORITHM=HS256
+# Access token (verified via JWKS/RS256 — minted by Auth Service T1)
+AUTH_JWKS_URL=http://auth-backend:8080/.well-known/jwks.json
 
 # Integration with the Registration Service
-REGISTRATION_SERVICE_URL=http://localhost:3001
+REGISTRATION_SERVICE_URL=http://registration-api:8000
 REGISTRATION_SERVICE_TIMEOUT_MS=500
 ```
 
@@ -766,14 +765,13 @@ REGISTRATION_SERVICE_TIMEOUT_MS=500
     {
       "Effect": "Allow",
       "Action": "sns:Publish",
-      "Resource": "arn:aws:sns:us-east-1:*:regisjr-check-in-events"
+      "Resource": "arn:aws:sns:us-east-1:*:checkin-events"
     },
     {
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
       "Resource": [
-        "arn:aws:secretsmanager:us-east-1:*:secret:regisjr/check-in/*",
-        "arn:aws:secretsmanager:us-east-1:*:secret:regisjr/auth/jwt-secret-*"
+        "arn:aws:secretsmanager:us-east-1:*:secret:regisjr/check-in/*"
       ]
     }
   ]
@@ -781,6 +779,24 @@ REGISTRATION_SERVICE_TIMEOUT_MS=500
 ```
 
 > Principle: **no DynamoDB delete permission** — check-ins are immutable. Corrections are issued as compensating records, not deletions.
+
+### 5.4. Running locally (US-08)
+
+This fork runs against the **shared Ministack** provisioned by T1 (auth-infra) — it does not start its own DynamoDB Local or LocalStack.
+
+**Prerequisite — T1 must be up first.** Bringing up T1 creates the external Docker network `auth-service_default`, the Ministack (LocalStack on `:4566`, exposing DynamoDB / SNS / Secrets Manager) and the Auth backend (`auth-backend:8080`, serving JWKS at `/.well-known/jwks.json`). The fork's `docker-compose.yml` joins `auth-service_default` and addresses peers by container name: `auth-infra:4566`, `auth-backend:8080`, `registration-api:8000`.
+
+**Stack startup order:** **T1 (Ministack + Auth) → T2 (Metrics) → forks**.
+
+**Start the fork** — from the repository root:
+
+```bash
+docker compose up
+```
+
+The compose `setup` service provisions the DynamoDB table (`check-in-service`), the SNS topic (`checkin-events`) and the QR secret on the shared Ministack; the NestJS app starts once provisioning completes.
+
+**End-to-end flow:** a check-in mutation (scan / manual) → SNS `checkin-events` → SQS → **T2 Metrics** consumer → **T3** dashboard.
 
 ---
 
@@ -824,4 +840,5 @@ REGISTRATION_SERVICE_TIMEOUT_MS=500
 | v0.2 | Per-section check-in — required for certificates that depend on accurate `workload_minutes` |
 | v0.3 | Optional geofencing — confirm the staff device is physically at the venue |
 | v0.4 | Offline mode for the reader — cached secret + local buffer with later sync |
-| v1.0 | Migrate access-token verification to public-key (RS256) once the Auth Service exposes JWKS |
+
+> ~~v1.0 — Migrate access-token verification to public-key (RS256) once the Auth Service exposes JWKS~~ — **done (US-08):** the access token is now verified via JWKS/RS256 against the Auth T1 (see ADR-008).

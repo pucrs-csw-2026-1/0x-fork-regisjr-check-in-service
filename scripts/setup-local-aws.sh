@@ -5,7 +5,8 @@ REGION=${AWS_REGION:-us-east-1}
 DYNAMO_ENDPOINT=${DYNAMODB_ENDPOINT:-http://localhost:8000}
 LOCALSTACK_ENDPOINT=${SNS_ENDPOINT:-http://localhost:4566}
 TABLE_NAME=${DYNAMODB_TABLE_NAME:-check-in-service}
-SNS_TOPIC_NAME=regisjr-check-in-events
+# US-08: tópico que o consumidor de SQS do Metrics (T2) assina.
+SNS_TOPIC_NAME=${SNS_TOPIC_NAME:-checkin-events}
 QR_SECRET=${QR_JWT_SECRET:-dev-qr-secret-change-in-production}
 AUTH_SECRET=${AUTH_JWT_SECRET:-dev-auth-secret-change-in-production}
 
