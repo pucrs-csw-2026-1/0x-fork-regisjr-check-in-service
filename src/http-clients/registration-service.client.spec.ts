@@ -39,7 +39,15 @@ describe('RegistrationServiceClient', () => {
   it('calls the correct check-in endpoint (GET /events/:id/guests/:id/check-in)', async () => {
     mockGet.mockResolvedValue({ data: { eventId: 'e', userId: 'u', status: 'CONFIRMED', createdAt: '', updatedAt: null } });
     await client.validateRegistration('event-1', 'user-1');
-    expect(mockGet).toHaveBeenCalledWith('/events/event-1/guests/user-1/check-in');
+    expect(mockGet).toHaveBeenCalledWith('/events/event-1/guests/user-1/check-in', undefined);
+  });
+
+  it('repassa o Bearer do chamador quando fornecido (US-08)', async () => {
+    mockGet.mockResolvedValue({ data: { status: 'CONFIRMED' } });
+    await client.validateRegistration('event-1', 'user-1', 'jwt-abc');
+    expect(mockGet).toHaveBeenCalledWith('/events/event-1/guests/user-1/check-in', {
+      headers: { Authorization: 'Bearer jwt-abc' },
+    });
   });
 
   it('200 when status is CONFIRMED', async () => {

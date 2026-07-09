@@ -70,7 +70,7 @@ describe('ScanQrCodeUseCase', () => {
   it('verifies QR token and validates registration', async () => {
     await useCase.execute('tok', EVENT_ID, STAFF_ID);
     expect(qrService.verify).toHaveBeenCalledWith('tok');
-    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID);
+    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID, undefined);
   });
 
   it('saves a new check-in with correct fields', async () => {

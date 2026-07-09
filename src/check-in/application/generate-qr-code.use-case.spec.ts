@@ -53,7 +53,7 @@ describe('GenerateQrCodeUseCase', () => {
 
   it('validates registration before issuing token', async () => {
     await useCase.execute(EVENT_ID, USER_ID);
-    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID);
+    expect(registrationClient.validateRegistration).toHaveBeenCalledWith(EVENT_ID, USER_ID, undefined);
   });
 
   it('returns token, qrPayload and expiresAt', async () => {

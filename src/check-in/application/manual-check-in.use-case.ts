@@ -20,8 +20,9 @@ export class ManualCheckInUseCase {
     userId: string,
     performedBy: string,
     reason?: string,
+    accessToken?: string,
   ): Promise<CheckInRecord> {
-    await this.registrationClient.validateRegistration(eventId, userId);
+    await this.registrationClient.validateRegistration(eventId, userId, accessToken);
 
     const existing = await this.checkInRepository.findByEventAndUser(eventId, userId);
     if (existing) {

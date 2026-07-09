@@ -40,6 +40,10 @@ services:
     environment:
       PORT: 3000
       AWS_REGION: us-east-1
+      # Credenciais dummy p/ o SDK AWS v3 (DynamoDB/SNS/Secrets) na Ministack — o
+      # SDK exige credenciais mesmo apontando para o LocalStack.
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       DYNAMODB_TABLE_NAME: check-in-service
       DYNAMODB_ENDPOINT: http://auth-infra:4566
       # Publica no tópico que o consumidor de SQS do Metrics (T2) assina.

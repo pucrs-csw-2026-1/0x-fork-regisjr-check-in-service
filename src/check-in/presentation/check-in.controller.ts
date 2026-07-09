@@ -36,6 +36,12 @@ export class CheckInController {
     private readonly getStatsUseCase: GetStatsUseCase,
   ) {}
 
+  /** Extrai o token Bearer bruto para repassar à validação de inscrição (US-08). */
+  private extractBearer(request: any): string | undefined {
+    const header: string = request?.headers?.authorization ?? '';
+    return /^Bearer\s+/i.test(header) ? header.replace(/^Bearer\s+/i, '') : undefined;
+  }
+
   @Get('events/:eventId/guests/:userId/qr-code')
   @Scopes('user', 'admin')
   @Throttle({ default: { ttl: 60000, limit: 10 } })
@@ -58,7 +64,7 @@ export class CheckInController {
       throw new ForbiddenException('Insufficient permissions');
     }
 
-    return this.generateQrCodeUseCase.execute(eventId, userId);
+    return this.generateQrCodeUseCase.execute(eventId, userId, this.extractBearer(request));
   }
 
   @Post('check-ins/scan')
@@ -78,6 +84,7 @@ export class CheckInController {
       body.token,
       body.eventId,
       request.user?.sub ?? body.scannedBy,
+      this.extractBearer(request),
     );
   }
 
@@ -142,6 +149,7 @@ export class CheckInController {
       body.userId,
       request.user?.sub ?? body.performedBy,
       body.reason,
+      this.extractBearer(request),
     );
   }
 
