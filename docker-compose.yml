@@ -1,8 +1,19 @@
-# US-08: o check-in usa a Ministack COMPARTILHADA (a do auth-infra em :4566) e o
-# Auth T1 (:8080), como todos os serviços — NÃO sobe localstack/dynamodb próprios.
-# Pré-requisito: a stack do T1 (auth-infra + auth-backend) já no ar.
-# Ordem de subida: T1 (Ministack + Auth) -> T2 -> forks. Um `docker compose up`
-# provisiona a tabela/tópico/secrets na Ministack e sobe o serviço.
+# US-08: o check-in usa a Ministack COMPARTILHADA (auth-infra em :4566) e o Auth
+# T1 (:8080), como todos os serviços — NÃO sobe localstack/dynamodb próprios. Entra
+# na MESMA rede docker dos outros forks (auth-service_default) e endereça os peers
+# por NOME de container (auth-infra / auth-backend / registration-api), igual a
+# avengers e manifestbolo — sem depender de host.docker.internal/portas publicadas.
+#
+# Pré-requisito: a stack do T1 (auth-infra + auth-backend) já no ar, criando a rede
+# `auth-service_default`. Ordem de subida: T1 (Ministack + Auth) -> T2 -> forks.
+# Um `docker compose up` provisiona a tabela/tópico/secrets na Ministack e sobe o app.
+name: checkin-fork
+
+networks:
+  ministack:
+    name: auth-service_default
+    external: true
+
 services:
   # Provisiona tabela DynamoDB + tópico SNS (checkin-events) + secrets do QR na
   # Ministack compartilhada. Roda uma vez e sai; o app espera concluir.
@@ -13,35 +24,35 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_REGION: us-east-1
-      DYNAMODB_ENDPOINT: http://host.docker.internal:4566
-      SNS_ENDPOINT: http://host.docker.internal:4566
+      DYNAMODB_ENDPOINT: http://auth-infra:4566
+      SNS_ENDPOINT: http://auth-infra:4566
       DYNAMODB_TABLE_NAME: check-in-service
       SNS_TOPIC_NAME: checkin-events
     volumes:
       - ./scripts:/scripts:ro
-    extra_hosts:
-      - 'host.docker.internal:host-gateway'
+    networks: [ministack]
 
   check-in-service:
     build: .
+    container_name: checkin-api
     ports:
       - '3000:3000'
     environment:
       PORT: 3000
       AWS_REGION: us-east-1
       DYNAMODB_TABLE_NAME: check-in-service
-      DYNAMODB_ENDPOINT: http://host.docker.internal:4566
+      DYNAMODB_ENDPOINT: http://auth-infra:4566
       # Publica no tópico que o consumidor de SQS do Metrics (T2) assina.
       SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:checkin-events
-      SNS_ENDPOINT: http://host.docker.internal:4566
-      SECRETS_MANAGER_ENDPOINT: http://host.docker.internal:4566
+      SNS_ENDPOINT: http://auth-infra:4566
+      SECRETS_MANAGER_ENDPOINT: http://auth-infra:4566
       # Auth único da plataforma: valida o JWT de usuário via JWKS do T1 (RS256).
-      AUTH_JWKS_URL: http://host.docker.internal:8080/.well-known/jwks.json
-      # Valida a inscrição no fork Registration antes do check-in.
-      REGISTRATION_SERVICE_URL: http://host.docker.internal:3001
+      AUTH_JWKS_URL: http://auth-backend:8080/.well-known/jwks.json
+      # Valida a inscrição no fork Registration — porta INTERNA 8000 do container
+      # na rede compartilhada (NÃO a porta publicada 3001 do host).
+      REGISTRATION_SERVICE_URL: http://registration-api:8000
       QR_JWT_SECRET: dev-qr-secret-change-in-production
-    extra_hosts:
-      - 'host.docker.internal:host-gateway'
     depends_on:
       setup:
         condition: service_completed_successfully
+    networks: [ministack]
